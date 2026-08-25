@@ -1,0 +1,23 @@
+[build-system]
+requires = ["uv_build>=0.12.5,<0.13"]
+build-backend = "uv_build"
+
+[project]
+name = "torrent-queue"
+version = "0.1.0"
+description = "Torrent queue download manager and processor"
+requires-python = ">=3.11"
+readme = "README.md"
+dependencies = [
+    "click",
+    "qbittorrent-api",
+    "polars",
+    "sqlalchemy",
+]
+
+[project.scripts]
+tq = "tq.cli:cli"
+
+[tool.uv.build-backend]
+module-name = "tq"
+module-root = ""
