@@ -1,8 +1,8 @@
 from unittest import result
-
 from sqlalchemy import String, ForeignKey, JSON, select, insert, func, and_, or_
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 from typing import Optional, List
+from dataclasses import dataclass, field
 import enum
 import datetime
 import polars as pl
@@ -67,6 +67,15 @@ STATE_CHANGE_MAP = {
 
 SHOULD_DELETE = {QueueState.DONE, QueueState.STALLED, QueueState.INVALID}
 
+
+@dataclass
+class ClientUpdate:
+    add: list[tuple[str, str]] = field(default_factory=list)
+    pause: list[str] = field(default_factory=list)
+    resume: list[str] = field(default_factory=list)
+    delete: list[str] = field(default_factory=list)
+
+
 def set_queue_state(t, new):          # module-level so processing.py can use it too
     old = t.queue_state
     if new == old:
@@ -75,6 +84,8 @@ def set_queue_state(t, new):          # module-level so processing.py can use it
         raise ValueError(f"Illegal transition {old} -> {new} for {t}")
     logger.info(f"Queue state of {t}: {old} -> {new}")
     t.queue_state = new
+
+
 
 class Torrent(Base):
     __tablename__ = "torrents"
@@ -100,6 +111,9 @@ class Torrent(Base):
     def __repr__(self):
         return f'Torrent(queue_position={self.queue_position!r}, name={self.name!r}, hash={self.hash!r})'
 
+
+
+
 class File(Base):
     __tablename__ = "files"
 
@@ -112,29 +126,83 @@ class File(Base):
     torrent: Mapped["Torrent"] = relationship(back_populates="files")
 
 
-
-class TorrentManager:
-    def __init__(self, config, session):
-        self.config = AttrDict(config)
-        self.session = session
+class TorrentClient:
+    def __init__(self, config):
+        self.category = config.category
+        self.sequential = config.get('sequential', False)
 
         client = qbittorrentapi.Client(
-            host="localhost", 
-            port=self.config.qbit.port, 
-            username=self.config.qbit.username, 
-            password=self.config.qbit.password, 
+            host="localhost",
+            port=config.port,
+            username=config.username,
+            password=config.password,
         )
         try:
             client.auth_log_in()
         except Exception as e:
             raise RuntimeError("Failed to connect to qBittorrent") from e
 
-        os.makedirs(self.config.qbit.save_path, exist_ok=True)
+        os.makedirs(config.save_path, exist_ok=True)
 
-        if self.config.qbit.category not in client.torrent_categories.categories:
-            client.torrents_create_category(name=self.config.qbit.category, save_path=os.path.abspath(self.config.qbit.save_path))
+        if self.category not in client.torrent_categories.categories:
+            client.torrents_create_category(
+                name=self.category,
+                save_path=os.path.abspath(config.save_path),
+            )
 
-        self.client = client
+        self._client = client
+
+    def torrents_info(self):
+        return self._client.torrents_info(
+            category=self.category,
+            include_files=True,
+        )
+
+    def apply(self, updates):
+        if updates.add:
+            logger.info(f"Adding {len(updates.add)} torrents to client: {updates.add}")
+            self._client.torrents_add(
+                urls=[magnet for _, magnet in updates.add],
+                category=self.category,
+                use_auto_torrent_management=True,
+                is_sequential_download=self.sequential,
+                is_first_last_piece_priority=self.sequential,
+            )
+            self._client.torrents_set_share_limits(
+                torrent_hashes=[torrent_hash for torrent_hash, _ in updates.add],
+                ratio_limit=0,
+                seeding_time_limit=0,
+                inactive_seeding_time_limit=-1,
+            )
+        if updates.pause:
+            logger.info(f"Pausing {len(updates.pause)} torrents in client: {updates.pause}")
+            self._client.torrents_pause(torrent_hashes=updates.pause)
+        if updates.resume:
+            logger.info(f"Resuming {len(updates.resume)} torrents in client: {updates.resume}")
+            self._client.torrents_resume(torrent_hashes=updates.resume)
+        if updates.delete:
+            logger.info(f"Removing {len(updates.delete)} torrents from client: {updates.delete}")
+            self._client.torrents_delete(
+                torrent_hashes=updates.delete,
+                delete_files=True,
+            )
+
+    def refresh_interval(self):
+        return self._client.app_preferences()['refresh_interval'] / 1000
+
+
+
+
+
+
+
+
+class TorrentManager:
+    def __init__(self, config, session):
+        self.config = AttrDict(config)
+        self.session = session
+
+        self.client = TorrentClient(self.config.qbit)
         self.running = True
         self.last_checked = {}
         self.pending = {}
@@ -180,34 +248,18 @@ class TorrentManager:
     def update(self):
         try:
             while self.running:
-                info = self.client.torrents_info(category=self.config.qbit.category, include_files=True)
-                to_add, to_pause, to_resume, to_del = self._update_state(info)
-
-                self._apply_state(to_add, to_pause, to_resume, to_del)
-
-                time.sleep(self.client.app_preferences()['refresh_interval'] / 1000)
+                self._tick()
+                time.sleep(self.client.refresh_interval())
         finally:
             self.pool.shutdown(wait=False, cancel_futures=True)
 
-    def _apply_state(self, to_add, to_pause, to_resume, to_del):
-        if to_add:
-            sequential = self.config.qbit.get('sequential', False)
-            logger.info(f"Adding {len(to_add)} torrents to client: {to_add}")
-            self.client.torrents_add(urls=[t.magnet for t in to_add], category=self.config.qbit.category, use_auto_torrent_management=True, is_sequential_download=sequential, is_first_last_piece_priority=sequential)
-            self.client.torrents_set_share_limits(torrent_hashes=[t.hash for t in to_add], ratio_limit=0, seeding_time_limit=0, inactive_seeding_time_limit=-1)
-        if to_pause:
-            logger.info(f"Pausing {len(to_pause)} torrents in client: {to_pause}")
-            self.client.torrents_pause(torrent_hashes=[t.hash for t in to_pause])
-        if to_resume:
-            logger.info(f"Resuming {len(to_resume)} torrents in client: {to_resume}")
-            self.client.torrents_resume(torrent_hashes=[t.hash for t in to_resume])
-        if to_del:
-            logger.info(f"Removing {len(to_del)} torrents from client: {to_del}")
-            self.client.torrents_delete(torrent_hashes=[t.hash for t in to_del], delete_files=True)
-
+    def _tick(self):
+        info = self.client.torrents_info()
+        updates = self._update_state(info)
+        self.client.apply(updates)
 
     def _update_state(self, info):
-        to_pause, to_delete = [], []
+        updates = ClientUpdate()
         with self.session() as session:
             in_client = set()
             for t in info:
@@ -220,24 +272,24 @@ class TorrentManager:
                 self._update_client_state(db_t, t)
 
                 if db_t.queue_state == QueueState.ACTIVE:
-                    self._handle_queued(session, db_t, t, to_pause)
+                    self._handle_queued(session, db_t, t, updates)
                 
                 if db_t.queue_state in SHOULD_DELETE:
                     logger.info(f"Deleting ({db_t.queue_state}): {db_t}")
-                    to_delete.append(db_t)
+                    updates.delete.append(db_t.hash)
             
             self._reset_removed(session, in_client)
-            to_add, limit_pause, to_resume = self._limit(session)
+            self._limit(session, updates)
             session.commit()
 
-        return to_add, to_pause + limit_pause, to_resume, to_delete
+        return updates
 
-    def _handle_queued(self, session, db_t, t, to_pause):
+    def _handle_queued(self, session, db_t, t, updates):
         result = self._validate(db_t, t)
         if result == WatcherResult.INVALID:
             set_queue_state(db_t, QueueState.INVALID)
         elif result == WatcherResult.COMPLETE or db_t.client_state == ClientState.COMPLETED:
-            self._mark_ready(session, db_t, t, to_pause)
+            self._mark_ready(session, db_t, t, updates)
         elif self._is_dead(db_t, t):
             set_queue_state(db_t, QueueState.STALLED)
         else:
@@ -271,12 +323,12 @@ class TorrentManager:
         self.pending[db_t.hash] = self.pool.submit(validation_function, t)
         return WatcherResult.VALID
 
-    def _mark_ready(self, session, db_t, t, to_pause):
+    def _mark_ready(self, session, db_t, t, updates):
         self._init_files(session, db_t, t.files)
         set_queue_state(db_t, QueueState.READY)
         db_t.is_slow, db_t.slow_since, db_t.dead_since = False, None, None
         if db_t.client_state != ClientState.COMPLETED:     # early COMPLETE: stop the client writing
-            to_pause.append(db_t)
+            updates.pause.append(db_t.hash)
 
     def _update_client_state(self, db_t, torrent):
         state = torrent.state_enum
@@ -352,11 +404,10 @@ class TorrentManager:
 
 
     # main queue management logic
-    def _limit(self, session):
+    def _limit(self, session, updates):
         active = self._count_active(session)
         maxa = self.config.management.max_active
 
-        to_add, to_pause, to_resume = [], [], []
         diff = maxa - active
 
         if diff > 0:
@@ -370,8 +421,8 @@ class TorrentManager:
                 .limit(diff)
             )
 
-            to_resume = list(session.scalars(stmt))
-            num_to_add = diff - len(to_resume)
+            updates.resume.extend(t.hash for t in session.scalars(stmt))
+            num_to_add = diff - len(updates.resume)
 
             if num_to_add > 0:
                 stmt = (
@@ -380,7 +431,7 @@ class TorrentManager:
                     .order_by(Torrent.queue_position) # TODO: add ability for custom ordering
                     .limit(num_to_add)
                 )
-                to_add = list(session.scalars(stmt))
+                updates.add.extend((t.hash, t.magnet) for t in session.scalars(stmt))
         elif diff < 0:
             stmt = (
                 select(Torrent)
@@ -392,10 +443,7 @@ class TorrentManager:
                 .order_by(Torrent.time_began.desc())
                 .limit(abs(diff))
             )
-            to_pause = list(session.scalars(stmt))
-
-
-        return to_add, to_pause, to_resume
+            updates.pause.extend(t.hash for t in session.scalars(stmt))
 
 
 
@@ -455,5 +503,3 @@ class TorrentManager:
 
         logger.info(f"Initializing {len(files)} files for torrent {torrent}")
         session.execute(insert(File), to_insert)
-
-
