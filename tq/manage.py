@@ -1,4 +1,6 @@
-from sqlalchemy import String, ForeignKey, JSON, select, insert, func
+from unittest import result
+
+from sqlalchemy import String, ForeignKey, JSON, select, insert, func, and_, or_
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 from typing import Optional, List
 import enum
@@ -9,50 +11,90 @@ import logging
 import qbittorrentapi
 import time
 from .utils import AttrDict, get_hash
+from concurrent.futures import ThreadPoolExecutor
 
 logger = logging.getLogger(__name__)
 
 validation_function = None
+validation_interval = 0
 
-def validator(func):
-    global validation_function
-    validation_function = func
-    return func
+def watcher(func=None, *, interval=0):
+    def register(f):
+        global validation_function, validation_interval
+        validation_function = f
+        validation_interval = interval
+        return f
+
+    if func is not None:
+        return register(func)
+    return register
 
 
 class Base(DeclarativeBase):
     pass
 
-class TorrentStatus(enum.StrEnum):
-    PENDING = "PENDING"
-    DOWNLOADING = "DOWNLOADING"
-    COMPLETED = "COMPLETED"
-    PAUSED = "PAUSED"
-    ERRORED = "ERRORED"
-    STALLED = "STALLED"
-    INVALID = "INVALID"
+
+class ClientState(enum.StrEnum):
+    NONE = 'NONE'
+    DOWNLOADING = 'DOWNLOADING'
+    COMPLETED = 'COMPLETED'
+    PAUSED = 'PAUSED'
+    ERRORED = 'ERRORED'
+
+class QueueState(enum.StrEnum):
+    PENDING = 'PENDING' # not in client yet
+    ACTIVE = 'ACTIVE' # in client and downloading
+    READY = 'READY' # ready to process
+    DONE = 'DONE' # processed and ready to delete
+    STALLED = 'STALLED'
+    INVALID = 'INVALID'
 
 
+class WatcherResult(enum.StrEnum):
+    INVALID = 'INVALID'
+    VALID = 'VALID'
+    COMPLETE = 'COMPLETE'
 
+
+STATE_CHANGE_MAP = {
+    QueueState.PENDING: {QueueState.ACTIVE},
+    QueueState.ACTIVE: {QueueState.READY, QueueState.STALLED, QueueState.INVALID, QueueState.PENDING},
+    QueueState.READY: {QueueState.DONE, QueueState.PENDING},
+    QueueState.DONE: set(),
+    QueueState.STALLED: set(),
+    QueueState.INVALID: set(),
+}
+
+SHOULD_DELETE = {QueueState.DONE, QueueState.STALLED, QueueState.INVALID}
+
+def set_queue_state(t, new):          # module-level so processing.py can use it too
+    old = t.queue_state
+    if new == old:
+        return
+    if new not in STATE_CHANGE_MAP[old]:
+        raise ValueError(f"Illegal transition {old} -> {new} for {t}")
+    logger.info(f"Queue state of {t}: {old} -> {new}")
+    t.queue_state = new
 
 class Torrent(Base):
     __tablename__ = "torrents"
 
     hash: Mapped[str] = mapped_column(String(40), primary_key=True)
     name: Mapped[Optional[str]]
-    status: Mapped[TorrentStatus] = mapped_column(default=TorrentStatus.PENDING)
     time_began: Mapped[Optional[datetime.datetime]]
+
+    client_state: Mapped[ClientState] = mapped_column(default=ClientState.NONE)
+    queue_state: Mapped[QueueState] = mapped_column(default=QueueState.PENDING)
+
     is_slow: Mapped[bool] = mapped_column(default=False)
     slow_since: Mapped[Optional[datetime.datetime]]
     dead_since: Mapped[Optional[datetime.datetime]]
 
     meta: Mapped[Optional[dict]] = mapped_column(JSON)
     claimed_at: Mapped[Optional[datetime.datetime]]
-    files_processed: Mapped[bool] = mapped_column(default=False)
-    metadata_checked: Mapped[bool] = mapped_column(default=False)
     magnet: Mapped[str] = mapped_column(unique=True)
 
-    files: Mapped[List["File"]] = relationship(back_populates="torrent")
+    files: Mapped[List["File"]] = relationship(back_populates="torrent", cascade="all, delete-orphan")
     queue_position: Mapped[int] = mapped_column(unique=True)
 
     def __repr__(self):
@@ -94,6 +136,9 @@ class TorrentManager:
 
         self.client = client
         self.running = True
+        self.last_checked = {}
+        self.pending = {}
+        self.pool = ThreadPoolExecutor(max_workers=self.config.management.get('watcher_workers', 2))
 
 
 
@@ -133,18 +178,22 @@ class TorrentManager:
 
 
     def update(self):
-        while self.running:
-            info = self.client.torrents_info(category=self.config.qbit.category, include_files=True)
-            to_add, to_pause, to_resume, to_del = self._update_state(info)
+        try:
+            while self.running:
+                info = self.client.torrents_info(category=self.config.qbit.category, include_files=True)
+                to_add, to_pause, to_resume, to_del = self._update_state(info)
 
-            self._apply_state(to_add, to_pause, to_resume, to_del)
+                self._apply_state(to_add, to_pause, to_resume, to_del)
 
-            time.sleep(self.client.app_preferences()['refresh_interval'] / 1000)
+                time.sleep(self.client.app_preferences()['refresh_interval'] / 1000)
+        finally:
+            self.pool.shutdown(wait=False, cancel_futures=True)
 
     def _apply_state(self, to_add, to_pause, to_resume, to_del):
         if to_add:
+            sequential = self.config.qbit.get('sequential', False)
             logger.info(f"Adding {len(to_add)} torrents to client: {to_add}")
-            self.client.torrents_add(urls=[t.magnet for t in to_add], category=self.config.qbit.category, use_auto_torrent_management=True)
+            self.client.torrents_add(urls=[t.magnet for t in to_add], category=self.config.qbit.category, use_auto_torrent_management=True, is_sequential_download=sequential, is_first_last_piece_priority=sequential)
             self.client.torrents_set_share_limits(torrent_hashes=[t.hash for t in to_add], ratio_limit=0, seeding_time_limit=0, inactive_seeding_time_limit=-1)
         if to_pause:
             logger.info(f"Pausing {len(to_pause)} torrents in client: {to_pause}")
@@ -158,78 +207,105 @@ class TorrentManager:
 
 
     def _update_state(self, info):
+        to_pause, to_delete = [], []
         with self.session() as session:
             in_client = set()
-            to_delete = []
-            new_completions = False
             for t in info:
                 in_client.add(t.hash)
-
                 db_t = session.get(Torrent, t.hash)
                 if db_t is None:
                     continue
 
                 self._set_name(db_t, t)
+                self._update_client_state(db_t, t)
 
-                if self._check_invalid(db_t, t):
-                    logger.info(f"Deleting (invalid): {db_t}")
-                    to_delete.append(db_t) # invalidate
-                    continue
-
-                og_status = db_t.status
-                self._update_status(session, db_t, t)
-
-                if db_t.status == TorrentStatus.COMPLETED and og_status != TorrentStatus.COMPLETED:
-                    new_completions = True
-
-                if db_t.status == TorrentStatus.COMPLETED and db_t.files_processed:
-                    logger.info(f"Deleting (complete): {db_t}")
-                    to_delete.append(db_t) # complete
-                    continue
-
-                if self._is_dead(db_t, t):
-                    logger.info(f"Deleting (dead): {db_t}")
-                    to_delete.append(db_t) # dead
-                else:
-                    self._set_if_slow(db_t, t)
+                if db_t.queue_state == QueueState.ACTIVE:
+                    self._handle_queued(session, db_t, t, to_pause)
+                
+                if db_t.queue_state in SHOULD_DELETE:
+                    logger.info(f"Deleting ({db_t.queue_state}): {db_t}")
+                    to_delete.append(db_t)
             
             self._reset_removed(session, in_client)
-            to_add, to_pause, to_resume = self._limit(session)
+            to_add, limit_pause, to_resume = self._limit(session)
             session.commit()
 
-        return to_add, to_pause, to_resume, to_delete
+        return to_add, to_pause + limit_pause, to_resume, to_delete
+
+    def _handle_queued(self, session, db_t, t, to_pause):
+        result = self._validate(db_t, t)
+        if result == WatcherResult.INVALID:
+            set_queue_state(db_t, QueueState.INVALID)
+        elif result == WatcherResult.COMPLETE or db_t.client_state == ClientState.COMPLETED:
+            self._mark_ready(session, db_t, t, to_pause)
+        elif self._is_dead(db_t, t):
+            set_queue_state(db_t, QueueState.STALLED)
+        else:
+            self._set_if_slow(db_t, t)
+
+    def _validate(self, db_t, t):
+        if validation_function is None or t.size == 0 or not t.files:
+            return WatcherResult.VALID
+
+        fut = self.pending.get(db_t.hash)
+        if fut is not None:
+            if not fut.done():
+                return WatcherResult.VALID
+            del self.pending[db_t.hash]
+            self.last_checked[db_t.hash] = datetime.datetime.now()
+
+            try:
+                result = fut.result()
+            except Exception as e:
+                logger.exception(f"Validator failed for {db_t}")
+                raise RuntimeError(f"Validator failed for {db_t}") from e
+            if isinstance(result, bool):
+                return WatcherResult.VALID if result else WatcherResult.INVALID
+            return WatcherResult(result)
+
+        last = self.last_checked.get(db_t.hash)
+        if db_t.client_state == ClientState.PAUSED and last is not None:
+            return WatcherResult.VALID
+        if validation_interval and last is not None and (datetime.datetime.now() - last).total_seconds() < validation_interval:
+            return WatcherResult.VALID
+        self.pending[db_t.hash] = self.pool.submit(validation_function, t)
+        return WatcherResult.VALID
+
+    def _mark_ready(self, session, db_t, t, to_pause):
+        self._init_files(session, db_t, t.files)
+        set_queue_state(db_t, QueueState.READY)
+        db_t.is_slow, db_t.slow_since, db_t.dead_since = False, None, None
+        if db_t.client_state != ClientState.COMPLETED:     # early COMPLETE: stop the client writing
+            to_pause.append(db_t)
+
+    def _update_client_state(self, db_t, torrent):
+        state = torrent.state_enum
+        if state.is_errored:
+            new = ClientState.ERRORED
+        elif state.is_complete:
+            new = ClientState.COMPLETED
+        elif state.is_stopped:
+            new = ClientState.PAUSED
+        else:
+            new = ClientState.DOWNLOADING
+
+        if db_t.client_state != new:
+            logger.info(f"Client state of {db_t}: {db_t.client_state} -> {new}")
+            db_t.client_state = new
+
+        # torrent was just added to client
+        if db_t.queue_state == QueueState.PENDING:
+            set_queue_state(db_t, QueueState.ACTIVE)
+            db_t.time_began = datetime.datetime.now()
 
     def _set_name(self, db_t, t):
         if db_t.name != t.name:
             logger.info(f'Updating name for {db_t.hash}: {db_t.name} -> {t.name}')
             db_t.name = t.name
             
-    
-    def _check_invalid(self, db_t, t):
-        if db_t.status == TorrentStatus.INVALID:
-            return False
-        if db_t.metadata_checked:
-            return False
-        if t.size == 0 or t.files is None:
-            return False
-
-
-        db_t.metadata_checked = True
-
-        if validation_function is None:
-            return False
-
-        if not validation_function(t):
-            logger.info(f"Invalid torrent {db_t}. Validation function {validation_function.__name__} returned False")
-            db_t.status = TorrentStatus.INVALID
-            return True
-        
-        return False
-
-
 
     def _set_if_slow(self, db_t, t):
-        if db_t.status != TorrentStatus.DOWNLOADING:
+        if db_t.client_state != ClientState.DOWNLOADING:
             db_t.slow_since = None
             db_t.is_slow = False
             return
@@ -253,7 +329,7 @@ class TorrentManager:
 
 
     def _is_dead(self, db_t, t):
-        if db_t.status != TorrentStatus.DOWNLOADING:
+        if db_t.client_state != ClientState.DOWNLOADING:
             db_t.dead_since = None
             return False
         
@@ -264,7 +340,6 @@ class TorrentManager:
                 db_t.dead_since = now
             elif (now - db_t.dead_since).total_seconds() >= self.config.management.dead_cls.min_time:
                 logger.info(f"Stalled (dead): {db_t}")
-                db_t.status = TorrentStatus.STALLED
                 db_t.dead_since = None
                 db_t.is_slow = False    
                 db_t.slow_since = None
@@ -287,7 +362,10 @@ class TorrentManager:
         if diff > 0:
             stmt = (
                 select(Torrent)
-                .where(Torrent.status == TorrentStatus.PAUSED)
+                .where(
+                    Torrent.queue_state == QueueState.ACTIVE,
+                    Torrent.client_state == ClientState.PAUSED,
+                )
                 .order_by(Torrent.time_began)
                 .limit(diff)
             )
@@ -298,7 +376,7 @@ class TorrentManager:
             if num_to_add > 0:
                 stmt = (
                     select(Torrent)
-                    .where(Torrent.status == TorrentStatus.PENDING)
+                    .where(Torrent.queue_state == QueueState.PENDING)
                     .order_by(Torrent.queue_position) # TODO: add ability for custom ordering
                     .limit(num_to_add)
                 )
@@ -307,7 +385,8 @@ class TorrentManager:
             stmt = (
                 select(Torrent)
                 .where(
-                    Torrent.status == TorrentStatus.DOWNLOADING, 
+                    Torrent.queue_state == QueueState.ACTIVE,
+                    Torrent.client_state == ClientState.DOWNLOADING,
                     ~Torrent.is_slow
                 )
                 .order_by(Torrent.time_began.desc())
@@ -322,17 +401,21 @@ class TorrentManager:
 
     def _count_active(self, session):
         stmt = select(func.count()).select_from(Torrent).where(
-            Torrent.status.in_([TorrentStatus.DOWNLOADING, TorrentStatus.COMPLETED]),
-            ~Torrent.is_slow,
-            ~Torrent.files_processed
+            or_(
+                and_(
+                    Torrent.queue_state == QueueState.ACTIVE,
+                    Torrent.client_state == ClientState.DOWNLOADING,
+                    ~Torrent.is_slow
+                ),
+                Torrent.queue_state == QueueState.READY
+            )
         )
         return session.scalar(stmt)
 
 
     def _reset_removed(self, session, in_client):
             stmt = select(Torrent).where(
-                Torrent.status.not_in([TorrentStatus.PENDING, TorrentStatus.STALLED, TorrentStatus.INVALID]),
-                ~Torrent.files_processed
+                Torrent.queue_state.in_([QueueState.ACTIVE, QueueState.READY])
             )
             in_db_torrents = list(session.scalars(stmt))
 
@@ -346,43 +429,16 @@ class TorrentManager:
                 max_pos = session.scalar(select(func.max(Torrent.queue_position)))
 
                 for i, t in enumerate(to_remove_torrents, start=1):
-                    t.status = TorrentStatus.PENDING
+                    set_queue_state(t, QueueState.PENDING)
+                    t.client_state = ClientState.NONE
                     t.time_began = None
                     t.is_slow = False
                     t.slow_since = None
                     t.dead_since = None
-                    t.files_processed = False
                     t.claimed_at = None
+                    t.files.clear()
                     logger.info(f"Deprioritizing removed torrent: {t}. Queue position: {t.queue_position} -> {max_pos + i}")
                     t.queue_position = max_pos + i
-
-    def _update_status(self, session, db_t, torrent):
-        enum = torrent.state_enum
-        if enum.is_errored:
-            new_status = TorrentStatus.ERRORED
-        elif enum.is_complete:
-            new_status = TorrentStatus.COMPLETED
-        elif enum.is_stopped:
-            new_status = TorrentStatus.PAUSED
-        else:
-            new_status = TorrentStatus.DOWNLOADING
-
-        if db_t.status != new_status:
-            og = db_t.status
-            logger.info(f"Status of {db_t} changed from {og} to {new_status}")
-            db_t.status = new_status
-
-            if new_status == TorrentStatus.DOWNLOADING and db_t.time_began is None:
-                db_t.time_began = datetime.datetime.now()
-            elif new_status == TorrentStatus.COMPLETED:
-                db_t.is_slow = False
-                db_t.slow_since = None
-                db_t.dead_since = None
-
-                files = torrent.files
-                assert files 
-
-                self._init_files(session, db_t, files)
 
 
     def _init_files(self, session, torrent, files):
@@ -399,7 +455,5 @@ class TorrentManager:
 
         logger.info(f"Initializing {len(files)} files for torrent {torrent}")
         session.execute(insert(File), to_insert)
-
-
 
 

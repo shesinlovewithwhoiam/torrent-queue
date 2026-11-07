@@ -1,6 +1,6 @@
 import logging
 from sqlalchemy import select
-from .manage import Torrent, TorrentStatus
+from .manage import Torrent, QueueState, set_queue_state
 from pathlib import Path
 from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass, field
@@ -64,8 +64,7 @@ def _get_next(session, config):
         stmt = (
             select(Torrent)
             .where(
-                Torrent.status == TorrentStatus.COMPLETED,
-                ~Torrent.files_processed
+                Torrent.queue_state == QueueState.READY,
             )
             .order_by(Torrent.time_began.asc())
             .limit(1)
@@ -102,11 +101,14 @@ def _set_done(session, hash):
     with session() as s:
         t = s.get(Torrent, hash)
         if t is None:
-            logger.warning(f"{t} not found in database?")
+            logger.warning(f"{hash} not found in database?")
             return
 
-        t.files_processed = True
-        logger.info(f"Marking torrent as processed: {t}")
+        if t.queue_state != QueueState.READY:
+            logger.warning(f"{t} is no longer READY ({t.queue_state}), not marking done")
+            return
+
+        set_queue_state(t, QueueState.DONE)
         s.commit()
 
 

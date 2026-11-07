@@ -1,6 +1,5 @@
 import click
 from .utils import load_toml
-from .db import make_sessionmaker
 from .processing import watch
 from .manage import TorrentManager
 import importlib
@@ -13,6 +12,20 @@ import os
 
 CONFIG_DEFAULT_PATH = "./configs/tq.toml"
 
+
+
+def make_sessionmaker(db_url):
+    from sqlalchemy import create_engine, event
+    from sqlalchemy.orm import sessionmaker
+    engine = create_engine(f'sqlite:///{db_url}', echo=False)
+
+    @event.listens_for(engine, "connect")
+    def set_sqlite_pragma(dbapi_connection, connection_record):
+        cursor = dbapi_connection.cursor()
+        cursor.execute("PRAGMA journal_mode=WAL")
+        cursor.close()
+
+    return sessionmaker(bind=engine, expire_on_commit=False), engine
 
 
 def setup_logging(name, dir_path, mode):

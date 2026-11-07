@@ -1,12 +1,14 @@
 [qbit]
-category = "tq" # Qbittorrent category name that torrents from this downloader will be grouped into.
-save_path = "./tq_data/torrents" # Path where torrents will be saved
-
 # Qbittorrent WebUI connection settings
 port = 8080
 username = 'admin'
 password = 'adminadmin'
 
+
+category = "tq" # Qbittorrent category name that torrents from this downloader will be grouped into.
+save_path = "./tq_data/torrents" # Path where torrents will be saved
+
+sequential = false
 
 [data]
 db_path = "./tq_data/queue.db" # Path to store SQLite torrent queue database file
@@ -22,6 +24,8 @@ module = "my_handlers" # Module name that contains processor and (optionally) va
 # Maximum number of torrents that can be downloading at the same time. 
 # Slow torrents do not count towards this limit, which is why you may see more than this number of torrents in your client.
 max_active = 3 
+
+watcher_workers = 3
 
 [management.slow_cls]
 # The number of seconds since a torrent has hit slow_threshold and not recovered before it is considered slow
