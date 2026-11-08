@@ -1,6 +1,6 @@
 import logging
 from sqlalchemy import select
-from .manage import Torrent, QueueState, set_queue_state
+from .models import QueueState, Torrent, set_queue_state
 from pathlib import Path
 from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass, field

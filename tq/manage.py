@@ -1,17 +1,25 @@
-from unittest import result
-from sqlalchemy import String, ForeignKey, JSON, select, insert, func, and_, or_
-from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
-from typing import Optional, List
+from sqlalchemy import select, insert, func, and_, or_
 from dataclasses import dataclass, field
-import enum
 import datetime
 import polars as pl
 import os
 import logging
 import qbittorrentapi
 import time
-from .utils import AttrDict, get_hash
 from concurrent.futures import ThreadPoolExecutor
+
+from .utils import AttrDict, get_hash
+from .models import (
+    Base,
+    ClientState,
+    File,
+    QueueState,
+    SHOULD_DELETE,
+    Torrent,
+    set_queue_state,
+)
+from .client import TorrentClient, ClientUpdate
+
 
 logger = logging.getLogger(__name__)
 
@@ -28,172 +36,6 @@ def watcher(func=None, *, interval=0):
     if func is not None:
         return register(func)
     return register
-
-
-class Base(DeclarativeBase):
-    pass
-
-
-class ClientState(enum.StrEnum):
-    NONE = 'NONE'
-    DOWNLOADING = 'DOWNLOADING'
-    COMPLETED = 'COMPLETED'
-    PAUSED = 'PAUSED'
-    ERRORED = 'ERRORED'
-
-class QueueState(enum.StrEnum):
-    PENDING = 'PENDING' # not in client yet
-    ACTIVE = 'ACTIVE' # in client and downloading
-    READY = 'READY' # ready to process
-    DONE = 'DONE' # processed and ready to delete
-    STALLED = 'STALLED'
-    INVALID = 'INVALID'
-
-
-class WatcherResult(enum.StrEnum):
-    INVALID = 'INVALID'
-    VALID = 'VALID'
-    COMPLETE = 'COMPLETE'
-
-
-STATE_CHANGE_MAP = {
-    QueueState.PENDING: {QueueState.ACTIVE},
-    QueueState.ACTIVE: {QueueState.READY, QueueState.STALLED, QueueState.INVALID, QueueState.PENDING},
-    QueueState.READY: {QueueState.DONE, QueueState.PENDING},
-    QueueState.DONE: set(),
-    QueueState.STALLED: set(),
-    QueueState.INVALID: set(),
-}
-
-SHOULD_DELETE = {QueueState.DONE, QueueState.STALLED, QueueState.INVALID}
-
-
-@dataclass
-class ClientUpdate:
-    add: list[tuple[str, str]] = field(default_factory=list)
-    pause: list[str] = field(default_factory=list)
-    resume: list[str] = field(default_factory=list)
-    delete: list[str] = field(default_factory=list)
-
-
-def set_queue_state(t, new):          # module-level so processing.py can use it too
-    old = t.queue_state
-    if new == old:
-        return
-    if new not in STATE_CHANGE_MAP[old]:
-        raise ValueError(f"Illegal transition {old} -> {new} for {t}")
-    logger.info(f"Queue state of {t}: {old} -> {new}")
-    t.queue_state = new
-
-
-
-class Torrent(Base):
-    __tablename__ = "torrents"
-
-    hash: Mapped[str] = mapped_column(String(40), primary_key=True)
-    name: Mapped[Optional[str]]
-    time_began: Mapped[Optional[datetime.datetime]]
-
-    client_state: Mapped[ClientState] = mapped_column(default=ClientState.NONE)
-    queue_state: Mapped[QueueState] = mapped_column(default=QueueState.PENDING)
-
-    is_slow: Mapped[bool] = mapped_column(default=False)
-    slow_since: Mapped[Optional[datetime.datetime]]
-    dead_since: Mapped[Optional[datetime.datetime]]
-
-    meta: Mapped[Optional[dict]] = mapped_column(JSON)
-    claimed_at: Mapped[Optional[datetime.datetime]]
-    magnet: Mapped[str] = mapped_column(unique=True)
-
-    files: Mapped[List["File"]] = relationship(back_populates="torrent", cascade="all, delete-orphan")
-    queue_position: Mapped[int] = mapped_column(unique=True)
-
-    def __repr__(self):
-        return f'Torrent(queue_position={self.queue_position!r}, name={self.name!r}, hash={self.hash!r})'
-
-
-
-
-class File(Base):
-    __tablename__ = "files"
-
-    hash: Mapped[str] = mapped_column(ForeignKey("torrents.hash"), primary_key=True)
-    file_id: Mapped[int] = mapped_column(primary_key=True)
-    filename: Mapped[str]
-    time_added: Mapped[datetime.datetime] = mapped_column(default=datetime.datetime.now)
-    size: Mapped[int]
-
-    torrent: Mapped["Torrent"] = relationship(back_populates="files")
-
-
-class TorrentClient:
-    def __init__(self, config):
-        self.category = config.category
-        self.sequential = config.get('sequential', False)
-
-        client = qbittorrentapi.Client(
-            host="localhost",
-            port=config.port,
-            username=config.username,
-            password=config.password,
-        )
-        try:
-            client.auth_log_in()
-        except Exception as e:
-            raise RuntimeError("Failed to connect to qBittorrent") from e
-
-        os.makedirs(config.save_path, exist_ok=True)
-
-        if self.category not in client.torrent_categories.categories:
-            client.torrents_create_category(
-                name=self.category,
-                save_path=os.path.abspath(config.save_path),
-            )
-
-        self._client = client
-
-    def torrents_info(self):
-        return self._client.torrents_info(
-            category=self.category,
-            include_files=True,
-        )
-
-    def apply(self, updates):
-        if updates.add:
-            logger.info(f"Adding {len(updates.add)} torrents to client: {updates.add}")
-            self._client.torrents_add(
-                urls=[magnet for _, magnet in updates.add],
-                category=self.category,
-                use_auto_torrent_management=True,
-                is_sequential_download=self.sequential,
-                is_first_last_piece_priority=self.sequential,
-            )
-            self._client.torrents_set_share_limits(
-                torrent_hashes=[torrent_hash for torrent_hash, _ in updates.add],
-                ratio_limit=0,
-                seeding_time_limit=0,
-                inactive_seeding_time_limit=-1,
-            )
-        if updates.pause:
-            logger.info(f"Pausing {len(updates.pause)} torrents in client: {updates.pause}")
-            self._client.torrents_pause(torrent_hashes=updates.pause)
-        if updates.resume:
-            logger.info(f"Resuming {len(updates.resume)} torrents in client: {updates.resume}")
-            self._client.torrents_resume(torrent_hashes=updates.resume)
-        if updates.delete:
-            logger.info(f"Removing {len(updates.delete)} torrents from client: {updates.delete}")
-            self._client.torrents_delete(
-                torrent_hashes=updates.delete,
-                delete_files=True,
-            )
-
-    def refresh_interval(self):
-        return self._client.app_preferences()['refresh_interval'] / 1000
-
-
-
-
-
 
 
 
@@ -384,14 +226,24 @@ class TorrentManager:
         if db_t.client_state != ClientState.DOWNLOADING:
             db_t.dead_since = None
             return False
-        
+
+        cfg = self.config.management.dead_cls
         now = datetime.datetime.now()
+
+        if t.size == 0: # metadata not downloaded
+            # Note on edge case: torrent limited before metadata is downloaded, then resumed after timeout. Marked as dead since reference is time_began. 
+            db_t.dead_since = None
+            timeout = cfg.get('metadata_timeout', cfg.timeout)
+            if db_t.time_began and (now - db_t.time_began).total_seconds() >= timeout:
+                logger.info(f"Dead (no metadata): {db_t}")
+                return True
+            return False
 
         if t.dlspeed == 0:
             if db_t.dead_since is None:
                 db_t.dead_since = now
-            elif (now - db_t.dead_since).total_seconds() >= self.config.management.dead_cls.min_time:
-                logger.info(f"Stalled (dead): {db_t}")
+            elif (now - db_t.dead_since).total_seconds() >= self.config.management.dead_cls.timeout:
+                logger.info(f"Dead: {db_t}")
                 db_t.dead_since = None
                 db_t.is_slow = False    
                 db_t.slow_since = None

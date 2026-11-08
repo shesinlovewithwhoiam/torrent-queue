@@ -38,5 +38,7 @@ unslow_threshold = 1.0
 [management.dead_cls]
 # The number of seconds that a torrent has not downloaded any data
 # before it is considered dead and marked as STALLED
-min_time = 900
+timeout = 900
 
+
+metadata_timeout = 300 # The number of seconds that a torrent has not downloaded any metadata before it is considered dead and marked as STALLED

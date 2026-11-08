@@ -1,0 +1,4 @@
+click
+qbittorrent-api
+polars
+sqlalchemy
