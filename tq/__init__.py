@@ -1,7 +1,7 @@
 from .processing import TorrentInfo, FileInfo
 from .manage import TorrentManager
 from .models import Torrent, File
-from .results import Valid, Ready, Reject, Wait
+from .results import Continue, Ready, Reject
 from qbittorrentapi import TorrentDictionary
 from .manage import watcher
 from .processing import processor
@@ -13,10 +13,9 @@ __all__ = [
     'Torrent',
     'File',
     'TorrentManager',
-    'Valid',
+    'Continue',
     'Ready',
     'Reject',
-    'Wait',
     'TorrentDictionary', # re-export
     'processor',
     'watcher'

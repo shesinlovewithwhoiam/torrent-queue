@@ -6,7 +6,6 @@ import os
 import logging
 import qbittorrentapi
 import time
-from concurrent.futures import ThreadPoolExecutor
 
 from .utils import AttrDict, get_hash
 from .models import (
@@ -19,23 +18,12 @@ from .models import (
     set_queue_state,
 )
 from .client import TorrentClient, ClientUpdate
+from .results import Kind
+
+
 
 
 logger = logging.getLogger(__name__)
-
-validation_function = None
-validation_interval = 0
-
-def watcher(func=None, *, interval=0):
-    def register(f):
-        global validation_function, validation_interval
-        validation_function = f
-        validation_interval = interval
-        return f
-
-    if func is not None:
-        return register(func)
-    return register
 
 
 
@@ -46,10 +34,8 @@ class TorrentManager:
 
         self.client = TorrentClient(self.config.qbit)
         self.running = True
-        self.last_checked = {}
-        self.pending = {}
-        self.pool = ThreadPoolExecutor(max_workers=self.config.management.get('watcher_workers', 2))
 
+        self.inspect_enabled = bool(self.config.management.get('inspect', False))
 
 
     def build_db(self, df, engine):
@@ -88,12 +74,9 @@ class TorrentManager:
 
 
     def update(self):
-        try:
-            while self.running:
-                self._tick()
-                time.sleep(self.client.refresh_interval())
-        finally:
-            self.pool.shutdown(wait=False, cancel_futures=True)
+        while self.running:
+            self._tick()
+            time.sleep(self.client.refresh_interval())
 
     def _tick(self):
         info = self.client.torrents_info()
@@ -126,51 +109,106 @@ class TorrentManager:
 
         return updates
 
+
     def _handle_queued(self, session, db_t, t, updates):
-        result = self._validate(db_t, t)
-        if result == WatcherResult.INVALID:
-            set_queue_state(db_t, QueueState.INVALID)
-        elif result == WatcherResult.COMPLETE or db_t.client_state == ClientState.COMPLETED:
-            self._mark_ready(session, db_t, t, updates)
-        elif self._is_dead(db_t, t):
-            set_queue_state(db_t, QueueState.STALLED)
+        verdict, db_t.verdict = db_t.verdict, None
+        wanted = self._apply_select(db_t, t, updates)
+        if db_t.queue_state != QueueState.ACTIVE:
+            return
+
+
+        now = datetime.datetime.now()
+
+        if verdict == Kind.REJECT:
+            self._terminate(db_t, QueueState.INVALID, db_t.reason or "Inspector returned Reject()")
+        elif verdict == Kind.READY:
+            self._mark_ready(session, db_t, t, updates, wanted)
+        elif db_t.client_state == ClientState.COMPLETED:
+            if not self._final_check_pending(db_t, t, now):
+                self._mark_ready(session, db_t, t, updates, wanted)
+        elif reason := self._check_dead(db_t, t):
+            self._terminate(db_t, QueueState.STALLED, reason)
         else:
             self._set_if_slow(db_t, t)
+            self._schedule_inspection(db_t, t, now)
 
-    def _validate(self, db_t, t):
-        if validation_function is None or t.size == 0 or not t.files:
-            return WatcherResult.VALID
+    @staticmethod
+    def _has_metadata(t):
+        return t.total_size > 0 
 
-        fut = self.pending.get(db_t.hash)
-        if fut is not None:
-            if not fut.done():
-                return WatcherResult.VALID
-            del self.pending[db_t.hash]
-            self.last_checked[db_t.hash] = datetime.datetime.now()
+    def _apply_select(self, db_t, t, updates):
+        if not db_t.select_files:
+            return None
+        wanted = set(db_t.select_files)
+        if not self._has_metadata(t):
+            return wanted
+        files = t['files']
+        if not files:
+            return wanted
 
-            try:
-                result = fut.result()
-            except Exception as e:
-                logger.exception(f"Validator failed for {db_t}")
-                raise RuntimeError(f"Validator failed for {db_t}") from e
-            if isinstance(result, bool):
-                return WatcherResult.VALID if result else WatcherResult.INVALID
-            return WatcherResult(result)
+        have = {f['index'] for f in files}
+        if wanted - have:
+            self._terminate(db_t, QueueState.INVALID, f"Select referenced files not in torrent: {sorted(wanted - have)}")
+            return None
 
-        last = self.last_checked.get(db_t.hash)
-        if db_t.client_state == ClientState.PAUSED and last is not None:
-            return WatcherResult.VALID
-        if validation_interval and last is not None and (datetime.datetime.now() - last).total_seconds() < validation_interval:
-            return WatcherResult.VALID
-        self.pending[db_t.hash] = self.pool.submit(validation_function, t)
-        return WatcherResult.VALID
+        enable = [f['index'] for f in files if f['index'] in wanted and f['priority'] == 0]
+        disable = [f['index'] for f in files if f['index'] not in wanted and f['priority'] != 0]
+        if enable or disable:
+            updates.select.append((db_t.hash, enable, disable))
+        else:
+            db_t.select_files = None
+        return wanted
 
-    def _mark_ready(self, session, db_t, t, updates):
-        self._init_files(session, db_t, t.files)
+    def _terminate(self, db_t, state, reason):
+        db_t.reason = reason
+        logger.info(f"{state}: {reason}: {db_t}")
+        set_queue_state(db_t, state)
+
+    def _schedule_inspection(self, db_t, t, now):
+        if not self.inspect_enabled or not self._has_metadata(t):
+            return
+        due = db_t.next_check_at or now
+        if due > now:
+            return
+        if db_t.snapshot_at is not None and db_t.snapshot_at >= due:
+            return
+        if db_t.client_state == ClientState.PAUSED and db_t.snapshot_at is not None:
+            return
+        self._take_snapshot(db_t, t, now)
+
+
+    def _take_snapshot(self, db_t, t, now):
+        db_t.snapshot = {
+            'torrent': {k: v for k, v in dict(t).items() if k != 'files'},
+            'files': t['files'],
+            'is_final': db_t.client_state == ClientState.COMPLETED,
+        }
+        db_t.snapshot_at = now
+
+    def _final_check_pending(self, db_t, t, now):
+        if not self.inspect_enabled:
+            return False
+        if (db_t.snapshot or {}).get('is_final'):
+            has_checked = db_t.verdict_snapshot_at is not None and db_t.verdict_snapshot_at >= db_t.snapshot_at
+            return not has_checked
+        db_t.next_check_at = now
+        self._take_snapshot(db_t, t, now)
+        return True
+
+    def _mark_ready(self, session, db_t, t, updates, wanted=None):
+        files = t['files']
+        keep = wanted or {f['index'] for f in files if f['priority'] > 0}
+        self._init_files(session, db_t, [f for f in files if f['index'] in keep])
         set_queue_state(db_t, QueueState.READY)
+        db_t.next_check_at = None
         db_t.is_slow, db_t.slow_since, db_t.dead_since = False, None, None
-        if db_t.client_state != ClientState.COMPLETED:     # early COMPLETE: stop the client writing
+        if db_t.client_state != ClientState.COMPLETED: # early ready, stop downloading
             updates.pause.append(db_t.hash)
+
+
+
+
+
 
     def _update_client_state(self, db_t, torrent):
         state = torrent.state_enum
@@ -191,6 +229,7 @@ class TorrentManager:
         if db_t.queue_state == QueueState.PENDING:
             set_queue_state(db_t, QueueState.ACTIVE)
             db_t.time_began = datetime.datetime.now()
+            db_t.next_check_at = db_t.time_began
 
     def _set_name(self, db_t, t):
         if db_t.name != t.name:
@@ -222,40 +261,41 @@ class TorrentManager:
             # self.client.torrents_remove_tags(tags='slow', torrent_hashes=db_t.hash)
 
 
-    def _is_dead(self, db_t, t):
+
+    def _check_dead(self, db_t, t):
         if db_t.client_state != ClientState.DOWNLOADING:
             db_t.dead_since = None
-            return False
+            return None
 
         cfg = self.config.management.dead_cls
         now = datetime.datetime.now()
 
-        if t.size == 0: # metadata not downloaded
+        if not self._has_metadata(t):
             # Note on edge case: torrent limited before metadata is downloaded, then resumed after timeout. Marked as dead since reference is time_began. 
             db_t.dead_since = None
             timeout = cfg.get('metadata_timeout', cfg.timeout)
             if db_t.time_began and (now - db_t.time_began).total_seconds() >= timeout:
-                logger.info(f"Dead (no metadata): {db_t}")
-                return True
-            return False
+                return f"No metadata after {timeout} seconds"
+            return None
 
         if t.dlspeed == 0:
             if db_t.dead_since is None:
                 db_t.dead_since = now
-            elif (now - db_t.dead_since).total_seconds() >= self.config.management.dead_cls.timeout:
-                logger.info(f"Dead: {db_t}")
-                db_t.dead_since = None
-                db_t.is_slow = False    
-                db_t.slow_since = None
-                return True
+            else:
+                waited = (now - db_t.dead_since).total_seconds()
+                if waited >= self.config.management.dead_cls.timeout:
+                    db_t.dead_since = None
+                    db_t.is_slow = False    
+                    db_t.slow_since = None
+                    return f"No download activity for {waited:.0f}s"
         else:
             db_t.dead_since = None
 
-        return False
+        return None
 
 
 
-    # main queue management logic
+    # MARK: Limiter
     def _limit(self, session, updates):
         active = self._count_active(session)
         maxa = self.config.management.max_active
@@ -304,10 +344,12 @@ class TorrentManager:
             or_(
                 and_(
                     Torrent.queue_state == QueueState.ACTIVE,
-                    Torrent.client_state == ClientState.DOWNLOADING,
-                    ~Torrent.is_slow
+                    or_(
+                        Torrent.client_state == ClientState.COMPLETED,
+                        and_(Torrent.client_state == ClientState.DOWNLOADING, ~Torrent.is_slow),
+                    ),
                 ),
-                Torrent.queue_state == QueueState.READY
+                Torrent.queue_state.in_([QueueState.READY, QueueState.PROCESSING])
             )
         )
         return session.scalar(stmt)
@@ -336,6 +378,12 @@ class TorrentManager:
                     t.slow_since = None
                     t.dead_since = None
                     t.claimed_at = None
+
+                    t.reason = None
+                    t.next_check_at = t.snapshot = t.snapshot_at = None
+                    t.verdict = t.verdict_snapshot_at = t.select_files = None
+                    t.inspect_claimed_by = t.inspect_lease_until = None
+
                     t.files.clear()
                     logger.info(f"Deprioritizing removed torrent: {t}. Queue position: {t.queue_position} -> {max_pos + i}")
                     t.queue_position = max_pos + i
@@ -345,9 +393,9 @@ class TorrentManager:
         to_insert = [
             {
                 'hash': torrent.hash,
-                'file_id': f.index,
-                'filename': f.name,
-                'size': f.size,
+                'file_id': f['index'],
+                'filename': f['name'],
+                'size': f['size'],
             } 
             for f in files
         ]

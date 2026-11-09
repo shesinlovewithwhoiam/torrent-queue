@@ -12,6 +12,7 @@ class ClientUpdate:
     pause: list[str] = field(default_factory=list)
     resume: list[str] = field(default_factory=list)
     delete: list[str] = field(default_factory=list)
+    select: list[tuple[str, list[int], list[int]]] = field(default_factory=list)
 
 
 class TorrentClient:
@@ -62,6 +63,15 @@ class TorrentClient:
                 seeding_time_limit=0,
                 inactive_seeding_time_limit=-1,
             )
+
+        if updates.select:
+            logger.info(f"Setting file priority for {len(updates.select)} selected torrents in client")
+            for torrent_hash, get, skip in updates.select:
+                if skip:
+                    self._client.torrents_file_priority(torrent_hash=torrent_hash, file_ids=skip, priority=0)
+                if get:
+                    self._client.torrents_file_priority(torrent_hash=torrent_hash, file_ids=get, priority=1)
+
         if updates.pause:
             logger.info(f"Pausing {len(updates.pause)} torrents in client: {updates.pause}")
             self._client.torrents_pause(torrent_hashes=updates.pause)

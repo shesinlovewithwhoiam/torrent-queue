@@ -66,6 +66,9 @@ class Torrent(Base):
     inspect_lease_until: Mapped[Optional[datetime.datetime]]
 
 
+    select_files: Mapped[Optional[list]] = mapped_column(JSON)
+
+
     # TODO: processor
 
 
