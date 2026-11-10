@@ -7,7 +7,6 @@ from dataclasses import dataclass, field
 from typing import Optional
 import time
 import datetime
-from .utils import AttrDict
 
 logger = logging.getLogger(__name__)
 
@@ -40,8 +39,6 @@ class TorrentInfo:
 def watch(session, config):
     if processing_function is None:
         raise ValueError("No processing function registered")
-
-    config = AttrDict(config)
 
     while True:
         try:
@@ -80,7 +77,7 @@ def _get_next(session, config):
             FileInfo(
                 file_id=f.file_id,
                 filename=f.filename,
-                path=Path(config.qbit.save_path) / f.filename,
+                path=Path(config['qbit']['save_path']) / f.filename,
                 size=f.size
             )
             for f in t.files

@@ -7,7 +7,7 @@ import logging
 import qbittorrentapi
 import time
 
-from .utils import AttrDict, get_hash
+from .utils import get_hash
 from .models import (
     Base,
     ClientState,
@@ -29,13 +29,13 @@ logger = logging.getLogger(__name__)
 
 class TorrentManager:
     def __init__(self, config, session):
-        self.config = AttrDict(config)
+        self.config = config
         self.session = session
 
-        self.client = TorrentClient(self.config.qbit)
+        self.client = TorrentClient(self.config['qbit'])
         self.running = True
 
-        self.inspect_enabled = bool(self.config.management.get('inspect', False))
+        self.inspect_enabled = bool(self.config['management'].get('inspect', False))
 
 
     def build_db(self, df, engine):
@@ -167,8 +167,8 @@ class TorrentManager:
     def _schedule_inspection(self, db_t, t, now):
         if not self.inspect_enabled or not self._has_metadata(t):
             return
-        due = db_t.next_check_at or now
-        if due > now:
+        due = db_t.next_check_at
+        if due is None or due > now:
             return
         if db_t.snapshot_at is not None and db_t.snapshot_at >= due:
             return
@@ -222,7 +222,8 @@ class TorrentManager:
             new = ClientState.DOWNLOADING
 
         if db_t.client_state != new:
-            logger.info(f"Client state of {db_t}: {db_t.client_state} -> {new}")
+            level = logging.WARNING if new == ClientState.ERRORED else logging.INFO
+            logger.log(level, f"Client state of {db_t}: {db_t.client_state} -> {new} ({torrent.state})")
             db_t.client_state = new
 
         # torrent was just added to client
@@ -246,14 +247,15 @@ class TorrentManager:
         speed = t.dlspeed / 1000**2 # B/s -> MB/s
         now = datetime.datetime.now()
 
-        if speed < self.config.management.slow_cls.slow_threshold:
+        slow_cfg = self.config['management']['slow_cls']
+        if speed < slow_cfg['slow_threshold']:
             if db_t.slow_since is None:
                 db_t.slow_since = now
-            elif not db_t.is_slow and (now - db_t.slow_since).total_seconds() >= self.config.management.slow_cls.min_time:
+            elif not db_t.is_slow and (now - db_t.slow_since).total_seconds() >= slow_cfg['min_time']:
                 db_t.is_slow = True
                 # self.client.torrents_add_tags(tags='slow', torrent_hashes=db_t.hash)
                 logger.info(f"Slowed: {db_t}")
-        elif speed > self.config.management.slow_cls.unslow_threshold:
+        elif speed > slow_cfg['unslow_threshold']:
             if db_t.is_slow:
                 logger.info(f"Recovered: {db_t}")
             db_t.slow_since = None
@@ -267,13 +269,13 @@ class TorrentManager:
             db_t.dead_since = None
             return None
 
-        cfg = self.config.management.dead_cls
+        cfg = self.config['management']['dead_cls']
         now = datetime.datetime.now()
 
         if not self._has_metadata(t):
             # Note on edge case: torrent limited before metadata is downloaded, then resumed after timeout. Marked as dead since reference is time_began. 
             db_t.dead_since = None
-            timeout = cfg.get('metadata_timeout', cfg.timeout)
+            timeout = cfg.get('metadata_timeout', cfg['timeout'])
             if db_t.time_began and (now - db_t.time_began).total_seconds() >= timeout:
                 return f"No metadata after {timeout} seconds"
             return None
@@ -283,7 +285,7 @@ class TorrentManager:
                 db_t.dead_since = now
             else:
                 waited = (now - db_t.dead_since).total_seconds()
-                if waited >= self.config.management.dead_cls.timeout:
+                if waited >= self.config['management']['dead_cls']['timeout']:
                     db_t.dead_since = None
                     db_t.is_slow = False    
                     db_t.slow_since = None
@@ -298,7 +300,7 @@ class TorrentManager:
     # MARK: Limiter
     def _limit(self, session, updates):
         active = self._count_active(session)
-        maxa = self.config.management.max_active
+        maxa = self.config['management']['max_active']
 
         diff = maxa - active
 

@@ -42,3 +42,10 @@ timeout = 900
 
 
 metadata_timeout = 300 # The number of seconds that a torrent has not downloaded any metadata before it is considered dead and marked as STALLED
+
+
+
+[inspection]
+idle = 1.0 # seconds
+
+lease = 600 # seconds

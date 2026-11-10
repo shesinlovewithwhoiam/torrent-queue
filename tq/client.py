@@ -17,26 +17,26 @@ class ClientUpdate:
 
 class TorrentClient:
     def __init__(self, config):
-        self.category = config.category
+        self.category = config['category']
         self.sequential = config.get('sequential', False)
 
         client = qbittorrentapi.Client(
             host="localhost",
-            port=config.port,
-            username=config.username,
-            password=config.password,
+            port=config['port'],
+            username=config['username'],
+            password=config['password'],
         )
         try:
             client.auth_log_in()
         except Exception as e:
             raise RuntimeError("Failed to connect to qBittorrent") from e
 
-        os.makedirs(config.save_path, exist_ok=True)
+        os.makedirs(config['save_path'], exist_ok=True)
 
         if self.category not in client.torrent_categories.categories:
             client.torrents_create_category(
                 name=self.category,
-                save_path=os.path.abspath(config.save_path),
+                save_path=os.path.abspath(config['save_path']),
             )
 
         self._client = client
