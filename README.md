@@ -27,17 +27,17 @@ qBittorrent settings. Make sure the Web UI is reachable before running `tq manag
 
 | Key | Required | Description | 
 | --- | --- | --- |
+| host | yes | Web UI host |
 | port | yes | Web UI port |
 | username | yes | Web UI username |
 | password | yes | Web UI password | 
 | save_path | yes | Directory torrents will be downloaded to.* |
-| category | yes | Category that all of `tq`'s torrents will be grouped under. Automatically created.** |
+| category | yes | Category that all of `tq`'s torrents will be grouped under. Automatically created. |
 | sequential | no | Whether to download torrents in sequential order. |
 
 \* For Docker users: qBittorrent is given the absolute form of `save_path`. Mount the folder into the container at the same path as on the host, or downloads will fail.
 
 
-\*\* The category keeps the `save_path` it was created with, so if you change `save_path`, remember to delete the category from the client before running again.
 
 
 ### [data]

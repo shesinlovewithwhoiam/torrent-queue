@@ -1,52 +1,35 @@
+# See the README ("Configuration") for what each setting does.
+
 [qbit]
-# Qbittorrent WebUI connection settings
+host = "localhost"
 port = 8080
-username = 'admin'
-password = 'adminadmin'
-
-
-category = "tq" # Qbittorrent category name that torrents from this downloader will be grouped into.
-save_path = "./tq_data/torrents" # Path where torrents will be saved
+username = "admin"
+password = "adminadmin"
+save_path = "./tq_data/torrents"
+category = "tq"
 
 sequential = false
 
-
 [data]
-db_path = "./tq_data/queue.db" # Path to store SQLite torrent queue database file
-log_dir = "./tq_data/logs" # Path to directory to store log files manager.log and worker.log
-
+db_path = "./tq_data/queue.db"
+log_dir = "./tq_data/logs"
 
 [handlers]
-app = "myproject.handlers:app"
-
-
+# app = "myproject.handlers:app"
 
 [management]
-# Maximum number of torrents that can be downloading at the same time. 
-# Slow torrents do not count towards this limit, which is why you may see more than this number of torrents in your client.
-max_active = 3 
-
-# TODO: inspect flag for testing?
+max_active = 3
+# inspect = true
 
 [management.slow_cls]
-# The number of seconds since a torrent has hit slow_threshold and not recovered before it is considered slow
-min_time = 300
-# The download speed threshold in MB/s below which a torrent should be considered slow.
 slow_threshold = 0.5
-# The download speed threshold in MB/s above which a torrent should be considered recovered or normal.
+min_time = 300
 unslow_threshold = 1.0
 
 [management.dead_cls]
-# The number of seconds that a torrent has not downloaded any data
-# before it is considered dead and marked as STALLED
 timeout = 900
+# metadata_timeout = 300
 
-
-metadata_timeout = 300 # The number of seconds that a torrent has not downloaded any metadata before it is considered dead and marked as STALLED
-
-
-
-[inspection]
-poll = 1.0 # seconds
-
-lease = 600 # seconds
+# [inspection]
+# poll = 1.0
+# lease = 600
