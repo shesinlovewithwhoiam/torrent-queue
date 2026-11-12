@@ -3,6 +3,7 @@ import logging
 import os
 import socket
 import time
+from dataclasses import dataclass
 from sqlalchemy import or_, select, update
 from .models import QueueState, Torrent
 from .results import parse
@@ -10,19 +11,110 @@ from .results import parse
 logger = logging.getLogger(__name__)
 
 
+@dataclass(frozen=True)
+class FileInfo:
+    availability: float
+    index: int
+    name: str
+    piece_range: list[int]
+    priority: int
+    progress: float
+    size: int
+
+
+@dataclass(frozen=True)
+class TorrentInfo:
+    added_on: int
+    amount_left: int
+    auto_tmm: bool
+    availability: float
+    category: str
+    comment: str
+    completed: int
+    completion_on: int
+    connections_count: int
+    connections_limit: int
+    content_path: str
+    created_by: str
+    creation_date: int
+    dl_limit: int
+    dlspeed: int
+    download_path: str
+    downloaded: int
+    downloaded_session: int
+    eta: int
+    f_l_piece_prio: bool
+    force_start: bool
+    has_metadata: bool
+    hash: str
+    inactive_seeding_time_limit: int
+    infohash_v1: str
+    infohash_v2: str
+    last_activity: int
+    magnet_uri: str
+    max_inactive_seeding_time: int
+    max_ratio: float
+    max_seeding_time: int
+    name: str
+    num_complete: int
+    num_incomplete: int
+    num_leechs: int
+    num_seeds: int
+    piece_size: int
+    pieces_have: int
+    pieces_num: int
+    popularity: float
+    priority: int
+    private: bool
+    progress: float
+    ratio: float
+    ratio_limit: float
+    root_path: str
+    save_path: str
+    seeding_time: int
+    seeding_time_limit: int
+    seen_complete: int
+    seq_dl: bool
+    share_limit_action: str
+    share_limits_mode: str
+    size: int
+    state: str
+    super_seeding: bool
+    tags: str
+    time_active: int
+    total_size: int
+    total_wasted: int
+    tracker: str
+    trackers_count: int
+    up_limit: int
+    uploaded: int
+    uploaded_session: int
+    upspeed: int
+    reannounce_in: int
+
+
+@dataclass(frozen=True)
+class Snapshot:
+    torrent: TorrentInfo
+    files: list[FileInfo]
+    meta: dict[str, object]
+    is_final: bool # TODO: is this really needed?
+
+
+
 
 class InspectorError(RuntimeError):
     pass
 
 
+
 def build_info(hash, meta, snapshot):
-    return {
-        **snapshot['torrent'],
-        'hash': hash,
-        'files': snapshot['files'],
-        'is_final': snapshot['is_final'],
-        'meta': meta or {},
-    }
+    return Snapshot(
+        torrent=TorrentInfo(**{**snapshot['torrent'], 'hash': hash}),
+        files=[FileInfo(**file) for file in snapshot['files']],
+        is_final=snapshot['is_final'],
+        meta=meta or {},
+    )
 
 
 class InspectWorker:
@@ -31,7 +123,7 @@ class InspectWorker:
         self.session = session
         self.fn = fn
         insp = self.config.get('inspection', {})
-        self.lease = datetime.timedelta(seconds=insp.get('lease', 600))
+        self.lease = datetime.timedelta(seconds=insp['lease'])
         self.poll = insp.get('poll', 1.0)
         self.id = f"{socket.gethostname()}:{os.getpid()}"
 

@@ -2,7 +2,7 @@ from .app import App
 from .manage import TorrentManager
 from .models import ClientState, File, QueueState, Torrent
 from .results import Continue, Ready, Reject, Select
-from qbittorrentapi import TorrentDictionary
+from .inspection import Snapshot
 
 
 __all__ = [
@@ -16,5 +16,5 @@ __all__ = [
     'ClientState',
     'QueueState',
     'TorrentManager',
-    # 'TorrentDictionary', # re-export
+    'Snapshot',
 ]
