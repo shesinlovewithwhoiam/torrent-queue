@@ -11,19 +11,6 @@ logger = logging.getLogger(__name__)
 
 
 
-_inspector = None
-
-
-def inspector(fn):
-    global _inspector
-    _inspector = fn
-    return fn
-
-
-def get_inspector():
-    return _inspector
-
-
 class InspectorError(RuntimeError):
     pass
 
@@ -39,22 +26,21 @@ def build_info(hash, meta, snapshot):
 
 
 class InspectWorker:
-    def __init__(self, config, session, fn=None):
+    def __init__(self, config, session, fn):
         self.config = config
         self.session = session
-        self.fn = fn or get_inspector()
-        if self.fn is None:
-            raise RuntimeError("No inspector registered: decorate a function with @inspector")
+        self.fn = fn
         insp = self.config.get('inspection', {})
         self.lease = datetime.timedelta(seconds=insp.get('lease', 600))
-        self.idle = insp.get('idle', 1.0)
+        self.poll = insp.get('poll', 1.0)
         self.id = f"{socket.gethostname()}:{os.getpid()}"
+
 
     def run(self):
         logger.info(f"Inspect worker {self.id} started")
         while True:
             if not self.run_once():
-                time.sleep(self.idle)
+                time.sleep(self.poll)
 
     def run_once(self):
         claimed = self._claim()

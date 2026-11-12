@@ -62,6 +62,8 @@ class TorrentClient:
                 ratio_limit=0,
                 seeding_time_limit=0,
                 inactive_seeding_time_limit=-1,
+                share_limit_action='Stop',
+                share_limits_mode='MatchAny'
             )
 
         if updates.select:

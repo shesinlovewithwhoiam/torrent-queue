@@ -10,13 +10,14 @@ save_path = "./tq_data/torrents" # Path where torrents will be saved
 
 sequential = false
 
+
 [data]
 db_path = "./tq_data/queue.db" # Path to store SQLite torrent queue database file
 log_dir = "./tq_data/logs" # Path to directory to store log files manager.log and worker.log
 
 
 [handlers]
-module = "my_handlers" # Module name that contains processor and (optionally) validator functions
+app = "myproject.handlers:app"
 
 
 
@@ -25,7 +26,7 @@ module = "my_handlers" # Module name that contains processor and (optionally) va
 # Slow torrents do not count towards this limit, which is why you may see more than this number of torrents in your client.
 max_active = 3 
 
-watcher_workers = 3
+# TODO: inspect flag for testing?
 
 [management.slow_cls]
 # The number of seconds since a torrent has hit slow_threshold and not recovered before it is considered slow
@@ -46,6 +47,6 @@ metadata_timeout = 300 # The number of seconds that a torrent has not downloaded
 
 
 [inspection]
-idle = 1.0 # seconds
+poll = 1.0 # seconds
 
 lease = 600 # seconds

@@ -28,49 +28,53 @@ logger = logging.getLogger(__name__)
 
 
 class TorrentManager:
-    def __init__(self, config, session):
+    def __init__(self, config, session, inspect=False):
         self.config = config
         self.session = session
 
         self.client = TorrentClient(self.config['qbit'])
         self.running = True
 
-        self.inspect_enabled = bool(self.config['management'].get('inspect', False))
+        # self.inspect_enabled = bool(self.config['management'].get('inspect', False))
+        self.inspect_enabled = inspect
 
 
     def build_db(self, df, engine):
         logger.info(f"Rebuilding database...")
 
+        if 'magnet' not in df.columns:
+            raise ValueError("Data must contain a 'magnet' column")
         assert 'queue_position' not in df.columns
+
+        hashes = []
+        for row, magnet in enumerate(df['magnet'], start=1):
+            try:
+                hashes.append(get_hash(magnet))
+            except Exception as e:
+                raise ValueError(f"Failed to compute hash for row {row}: {e}")
+
+        df = df.with_columns(pl.Series('hash', hashes, dtype=pl.String))
+
+        dupes = df.with_row_index('row', offset=1).filter(pl.col('hash').is_duplicated())
+        if len(dupes) > 0:
+            rows = dupes['row'].to_list()
+            raise ValueError(f"{len(rows)} duplicate hashes found in CSV data.")
+
         df = df.with_row_index('queue_position', offset=1)
 
         Base.metadata.drop_all(engine)
         Base.metadata.create_all(engine)
         self._insert_tasks(df)
-        logger.info(f"Database built with {len(df)} torrents")
+        logger.info(f"Database built with {len(df)} torrents.")
 
-    
     def _insert_tasks(self, df):
-        cols = df.columns
-
-        if 'magnet' not in cols:
-            raise ValueError("CSV data DataFrame must contain a 'magnet' column with magnet links")
-        if 'hash' not in cols:
-            logger.info("No 'hash' column found in CSV data. Computing hashes from magnet links...")
-            df = df.with_columns(
-                pl.col('magnet').map_elements(get_hash, return_dtype=pl.String).alias('hash')
-            )
-            logger.info("Hashes computed and added to DataFrame")
-
-
-        df = df.with_columns(
-            pl.struct(pl.all().exclude(['hash', 'magnet'])).alias('meta')
-        )
+        meta_cols = [c for c in df.columns if c not in ('hash', 'magnet', 'queue_position')]
         rows = df.to_dicts()
+        for row in rows:
+            row['meta'] = {c: row.pop(c) for c in meta_cols}
         with self.session() as session:
             session.execute(insert(Torrent), rows)
             session.commit()
-
 
 
     def update(self):
@@ -285,7 +289,7 @@ class TorrentManager:
                 db_t.dead_since = now
             else:
                 waited = (now - db_t.dead_since).total_seconds()
-                if waited >= self.config['management']['dead_cls']['timeout']:
+                if waited >= cfg['timeout']:
                     db_t.dead_since = None
                     db_t.is_slow = False    
                     db_t.slow_since = None
@@ -347,7 +351,7 @@ class TorrentManager:
                 and_(
                     Torrent.queue_state == QueueState.ACTIVE,
                     or_(
-                        Torrent.client_state == ClientState.COMPLETED,
+                        Torrent.client_state.in_([ClientState.COMPLETED, ClientState.ERRORED]),
                         and_(Torrent.client_state == ClientState.DOWNLOADING, ~Torrent.is_slow),
                     ),
                 ),
