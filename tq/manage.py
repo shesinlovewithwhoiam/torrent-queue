@@ -28,15 +28,15 @@ logger = logging.getLogger(__name__)
 
 
 class TorrentManager:
-    def __init__(self, config, session, inspect=False):
+    def __init__(self, config, session, inspect):
         self.config = config
         self.session = session
 
         self.client = TorrentClient(self.config['qbit'])
         self.running = True
 
-        # self.inspect_enabled = bool(self.config['management'].get('inspect', False))
         self.inspect_enabled = inspect
+        logger.info(f"Inspection {'on' if inspect else 'off (no inspector registered)'}")
 
 
     def build_db(self, df, engine):

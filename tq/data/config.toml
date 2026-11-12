@@ -19,7 +19,6 @@ log_dir = "./tq_data/logs"
 
 [management]
 max_active = 3
-# inspect = true
 
 [management.slow_cls]
 slow_threshold = 0.5

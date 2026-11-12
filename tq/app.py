@@ -76,7 +76,7 @@ class App:
 
 
     def inspect_worker(self):
-        from .inspect import InspectWorker
+        from .inspection import InspectWorker
         if self._inspector is None:
             raise RuntimeError("Inspect worker ran but no inspector registered. Decorate a function with @app.inspector")
         return InspectWorker(self.config, self.sessionmaker, self._inspector)

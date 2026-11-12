@@ -7,10 +7,10 @@ import shutil
 import logging
 import os
 
-from .utils import load_toml
+
 from .manage import TorrentManager
 from .app import App
-from .inspect import InspectorError
+from .inspection import InspectorError
 
 
 def setup_logging(name, dir_path, mode):
@@ -57,9 +57,7 @@ def find_app(ctx):
         click.secho(f"[ERROR] {e}", fg='red')
         ctx.exit(1)
 
-
-
-
+    return app
 
 
 @click.group()
@@ -71,6 +69,7 @@ def cli(ctx, app, config):
     ctx.obj['config'] = config
     ctx.obj['app_path'] = app
 
+
 def prepare_worker(ctx, name):
     app = find_app(ctx)
     config = app.config
@@ -81,14 +80,14 @@ def prepare_worker(ctx, name):
 
     Path(config['data']['log_dir']).mkdir(parents=True, exist_ok=True)
     setup_logging(name, config['data']['log_dir'], mode='a')
-    return app, config
+    return app
 
 
 
 @cli.command()
 @click.pass_context
 def inspector(ctx):
-    app, config = prepare_worker(ctx, 'inspector')
+    app = prepare_worker(ctx, 'inspector')
     try:
         worker = app.inspect_worker()
     except RuntimeError as e:
@@ -106,7 +105,7 @@ def inspector(ctx):
 @cli.command()
 @click.pass_context
 def worker(ctx):
-    app, config = prepare_worker(ctx, 'worker')
+    app = prepare_worker(ctx, 'worker')
 
     raise NotImplementedError()
 
