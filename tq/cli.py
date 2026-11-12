@@ -25,21 +25,10 @@ def setup_logging(name, dir_path, mode):
 
 
 def find_app(ctx):
-    path, config = ctx.obj['app_path'], None
-
-    if ctx.obj['config'] is not None:
-        try:
-            config = load_toml(ctx.obj['config'])
-        except FileNotFoundError as e:
-            click.secho(f"[ERROR] Failed to load config: {e}", fg='red')
-            ctx.exit(1)
-        path = path or config.get('handlers', {}).get('app')
-
+    path = ctx.obj['app_path']
     if path is None:
-        if config is None:
-            click.secho("[ERROR] Need config, pass --config or include in App(config).", fg='red')
-            ctx.exit(1)
-        return App(config)
+        click.secho("[ERROR] Pass your app with -A module:app.", fg='red')
+        ctx.exit(1)
 
     mod, _, var = path.partition(':')
     var = var or 'app'
@@ -59,24 +48,23 @@ def find_app(ctx):
         click.secho(f"[ERROR] '{var}' in module '{mod}' is not an instance of tq.App.", fg='red')
         ctx.exit(1)
 
-    if config is not None:
-        app.use_config(config)
+    if ctx.obj['config'] is not None:
+        app.use_config(ctx.obj['config'])
 
     try:
         app.config
     except (RuntimeError, FileNotFoundError) as e:
-        click.secho(f"[ERROR]: {e}", fg='red')
+        click.secho(f"[ERROR] {e}", fg='red')
         ctx.exit(1)
 
-    return app
 
 
 
 
 
 @click.group()
-@click.option('-A', '--app', default=None, help='App module path, in the form of "module:app". Overrides the app module specified in the config file.')
-@click.option('--config', default=None, type=click.Path(path_type=Path), help='Path to TOML config file')
+@click.option('-A', '--app', default=None, help='Your tq.App as module:name')
+@click.option('--config', default=None, type=click.Path(path_type=Path), help='Path to TOML config file. Overrides config given to App.')
 @click.pass_context
 def cli(ctx, app, config):
     ctx.ensure_object(dict)

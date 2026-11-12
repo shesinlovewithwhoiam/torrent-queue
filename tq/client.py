@@ -31,8 +31,9 @@ class TorrentClient:
         except Exception as e:
             raise RuntimeError("Failed to connect to qBittorrent") from e
 
-        save_path = os.path.abspath(config['save_path'])
-        os.makedirs(save_path, exist_ok=True)
+        local_path = os.path.abspath(os.path.expanduser(config['save_path']))
+        save_path = config.get('container_save_path', local_path)
+        os.makedirs(local_path, exist_ok=True)
 
         categories = client.torrent_categories.categories
         if self.category not in categories:
@@ -40,7 +41,7 @@ class TorrentClient:
                 name=self.category,
                 save_path=save_path,
             )
-        elif categories[self.category] != save_path:
+        elif categories[self.category]['savePath'] != save_path:
             logger.info(f"Updating category {self.category!r} save path to {save_path!r}")
             client.torrents_edit_category(
                 category=self.category,

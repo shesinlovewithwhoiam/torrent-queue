@@ -36,9 +36,10 @@ class App:
             self._config = dict(self._source) if isinstance(self._source, Mapping) else load_toml(self._source)
         return self._config
 
-    def use_config(self, config):
-        if self._source is None and self._config is None:
-            self._config = config
+    def use_config(self, source):
+        self._source = source
+        self._config = None
+        self._database = None
 
     @property
     def sessionmaker(self):

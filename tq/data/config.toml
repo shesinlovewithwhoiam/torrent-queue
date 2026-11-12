@@ -5,17 +5,17 @@ host = "localhost"
 port = 8080
 username = "admin"
 password = "adminadmin"
-save_path = "./tq_data/torrents"
-category = "tq"
 
-sequential = false
+category = "tq"
+# sequential = false
+
+save_path = "./tq_data/torrents"
+# container_save_path = "/downloads"
+
 
 [data]
 db_path = "./tq_data/queue.db"
 log_dir = "./tq_data/logs"
-
-[handlers]
-# app = "myproject.handlers:app"
 
 [management]
 max_active = 3

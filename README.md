@@ -31,12 +31,10 @@ qBittorrent settings. Make sure the Web UI is reachable before running `tq manag
 | port | yes | Web UI port |
 | username | yes | Web UI username |
 | password | yes | Web UI password | 
-| save_path | yes | Directory torrents will be downloaded to.* |
 | category | yes | Category that all of `tq`'s torrents will be grouped under. Automatically created. |
 | sequential | no | Whether to download torrents in sequential order. |
-
-\* For Docker users: qBittorrent is given the absolute form of `save_path`. Mount the folder into the container at the same path as on the host, or downloads will fail.
-
+| save_path | yes | Directory torrents will be downloaded to. |
+| container_save_path | no | You may want to use this if running qBittorrent in Docker container, or any setup where qBittorrent sees the folder at a different path. This is the path torrents will be saved to by the client. You can then mount the local `save_path` to this path in your `docker-compose.yml`. Defaults to `save_path` |
 
 
 
@@ -46,10 +44,7 @@ qBittorrent settings. Make sure the Web UI is reachable before running `tq manag
 | db_path | yes | Path to SQLite queue database. |
 | log_dir | yes | Directory in which log files will be written to. |
 
-### [handlers]
-| Key | Required | Description | 
-| --- | --- | --- |
-| app | no | Your app as `module:name`. Used when you run with `tq --config ...` |
+
 
 ### [management]
 | Key | Required | Description | 
