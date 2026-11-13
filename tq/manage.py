@@ -273,15 +273,19 @@ class TorrentManager:
             db_t.dead_since = None
             return None
 
-        cfg = self.config['management']['dead_cls']
+        cfg = self.config['management'].get('dead_cls', {})
+        timeout = cfg.get('timeout')
         now = datetime.datetime.now()
 
         if not self._has_metadata(t):
             # Note on edge case: torrent limited before metadata is downloaded, then resumed after timeout. Marked as dead since reference is time_began. 
             db_t.dead_since = None
-            timeout = cfg.get('metadata_timeout', cfg['timeout'])
-            if db_t.time_began and (now - db_t.time_began).total_seconds() >= timeout:
-                return f"No metadata after {timeout} seconds"
+            metadata_timeout = cfg.get('metadata_timeout', timeout)
+            if metadata_timeout is not None and db_t.time_began and (now - db_t.time_began).total_seconds() >= metadata_timeout:
+                return f"No metadata after {metadata_timeout} seconds"
+            return None
+
+        if timeout is None:
             return None
 
         if t.dlspeed == 0:
@@ -289,7 +293,7 @@ class TorrentManager:
                 db_t.dead_since = now
             else:
                 waited = (now - db_t.dead_since).total_seconds()
-                if waited >= cfg['timeout']:
+                if waited >= timeout:
                     db_t.dead_since = None
                     db_t.is_slow = False    
                     db_t.slow_since = None

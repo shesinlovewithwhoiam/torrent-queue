@@ -60,7 +60,7 @@ When a torrent should be set to slow.
 | min_time | yes | Seconds it must remain below `slow_threshold` to be marked as slow. |
 | unslow_threshold | yes | Speed in MB/s above which a torrent is unmarked as slow. | 
 
-#### [management.dead_cls]
+#### [management.dead_cls] (optional)
 When a torrent should be given up on, marked as `STALLED`, and removed from the client.
 | Key | Required | Description | 
 | --- | --- | --- |

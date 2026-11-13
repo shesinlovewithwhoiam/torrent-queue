@@ -58,7 +58,8 @@ class TorrentClient:
 
     def apply(self, updates):
         if updates.add:
-            logger.info(f"Adding {len(updates.add)} torrents to client: {updates.add}")
+            hashes = [torrent_hash for torrent_hash, _ in updates.add]
+            logger.info(f"Adding {len(hashes)} torrents to client: {hashes}")
             self._client.torrents_add(
                 urls=[magnet for _, magnet in updates.add],
                 category=self.category,

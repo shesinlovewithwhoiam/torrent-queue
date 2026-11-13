@@ -5,6 +5,9 @@ import socket
 import time
 from dataclasses import dataclass
 from sqlalchemy import or_, select, update
+import signal
+import threading
+
 from .models import QueueState, Torrent
 from .results import parse
 
@@ -65,7 +68,7 @@ class TorrentInfo:
     pieces_num: int
     popularity: float
     priority: int
-    private: bool
+    private: bool # Can be None if metadata hasn't been downloaded yet, but currently we only inspect torrents with metadata
     progress: float
     ratio: float
     ratio_limit: float
@@ -98,7 +101,7 @@ class Snapshot:
     torrent: TorrentInfo
     files: list[FileInfo]
     meta: dict[str, object]
-    is_final: bool # TODO: is this really needed?
+    is_final: bool
 
 
 
@@ -127,12 +130,43 @@ class InspectWorker:
         self.poll = insp.get('poll', 1.0)
         self.id = f"{socket.gethostname()}:{os.getpid()}"
 
+        self._stop = threading.Event()
+        self._held = None
+
 
     def run(self):
+        def handle_signal(signum, frame):
+            if self._stop.is_set():
+                raise KeyboardInterrupt
+            self._stop.set()
+            logger.info("Finishing current inspect. Press Ctrl+C again to stop now.")
+
+        self._stop.clear()
+        old = {}
+        if threading.current_thread() is not threading.main_thread():
+            for sig in (signal.SIGINT, signal.SIGTERM):
+                old[sig] = signal.signal(sig, handle_signal)
+
         logger.info(f"Inspect worker {self.id} started")
-        while True:
-            if not self.run_once():
-                time.sleep(self.poll)
+
+        try:
+            while not self._stop.is_set():
+                if not self.run_once():
+                    self._stop.wait(self.poll)
+        except KeyboardInterrupt:
+            logger.warning(f"Stopping inspect worker {self.id}. Interrupted check will run again")
+        finally:
+            for sig, handler in old.items():
+                signal.signal(sig, handler)
+            if self._held is not None:
+                try:
+                    self._release(self._held)
+                except Exception as e:
+                    logger.warning(f"Failed to release claim on {self._held}. It will be available again when its lease expires")
+                self._held = None
+            logger.info(f"Inspect worker {self.id} stopped")
+
+
 
     def run_once(self):
         claimed = self._claim()
@@ -165,17 +199,24 @@ class InspectWorker:
         with self.session() as s:
             row = s.execute(stmt).one_or_none()
             s.commit()
-        return None if row is None else tuple(row)
+
+        if row is None:
+            return None
+        self._held = row[0]
+        return tuple(row)
 
     def _inspect(self, hash, snapshot, snapshot_at, meta):
         try:
             outcome = parse(self.fn(build_info(hash, meta, snapshot)))
         except Exception as e:
             self._release(hash)
+            self._held = None
             name = snapshot['torrent'].get('name')
             raise InspectorError(f"Inspector failed on {hash} ({name}): {type(e).__name__}: {e}") from e
 
-        if not self._write(hash, snapshot_at, outcome):
+        written = self._write(hash, snapshot_at, outcome)
+        self._held = None
+        if not written:
             logger.warning(f"Lost the claim on {hash}; discarding {outcome.kind} verdict")
 
     def _write(self, hash, snapshot_at, outcome):
