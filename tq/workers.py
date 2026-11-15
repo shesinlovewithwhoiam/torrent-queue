@@ -70,13 +70,13 @@ class InspectorError(RuntimeError):
 
 
 
-
-
 class Worker:
-    def __init__(self, config, section, session, fn):
+    section: str = 'worker'
+
+    def __init__(self, config, session, fn):
         self.session = session
         self.fn = fn
-        self.poll = config.get(section, {}).get('poll', 1.0)
+        self.poll = config.get(self.section, {}).get('poll', 0.5)
         self.save_dir = Path(os.path.abspath(os.path.expanduser(config['qbit']['save_path'])))
         self._stop = threading.Event()
 
@@ -112,7 +112,7 @@ class Worker:
         claimed = self._next()
         if claimed is None:
             return False
-        self._handle(claimed)
+        self._process(claimed)
         return True
 
     def _start(self):
@@ -124,13 +124,12 @@ class Worker:
     def _next(self):
         raise NotImplementedError
 
-    def _handle(self, claimed):
+    def _process(self, item):
         raise NotImplementedError
 
 
 class InspectWorker(Worker):
-    def __init__(self, config, session, fn):
-        super().__init__(config, 'inspection', session, fn)
+    section = 'inspection'
 
     def _next(self):
         stmt = (
@@ -147,7 +146,7 @@ class InspectWorker(Worker):
             row = s.execute(stmt).one_or_none()
         return tuple(row) if row else None
 
-    def _handle(self, claimed):
+    def _process(self, claimed):
         hash, snapshot, snapshot_at, meta = claimed
         try:
             outcome = parse(self.fn(build_info(hash, meta, snapshot, self.save_dir)))
@@ -181,8 +180,10 @@ class InspectWorker(Worker):
 
 
 class ProcessWorker(Worker):
+    section = 'processing'
+
     def __init__(self, config, session, fn):
-        super().__init__(config, 'processing', session, fn)
+        super().__init__(config, session, fn)
         self._held = None
 
     def _start(self):
@@ -226,7 +227,7 @@ class ProcessWorker(Worker):
             files=[ProcessFile(f.file_id, f.filename, self.save_dir / f.filename, f.size) for f in files],
         )
 
-    def _handle(self, info):
+    def _process(self, info):
         try:
             self.fn(info)
         except Exception as e:
