@@ -6,7 +6,6 @@ import os
 import logging
 import qbittorrentapi
 import time
-
 from .utils import get_hash
 from .models import (
     Base,
@@ -387,13 +386,11 @@ class TorrentManager:
                     t.is_slow = False
                     t.slow_since = None
                     t.dead_since = None
-                    t.claimed_at = None
 
                     t.reason = None
                     t.next_check_at = t.snapshot = t.snapshot_at = None
                     t.verdict = t.verdict_snapshot_at = t.select_files = None
-                    t.inspect_claimed_by = t.inspect_lease_until = None
-
+  
                     t.files.clear()
                     logger.info(f"Deprioritizing removed torrent: {t}. Queue position: {t.queue_position} -> {max_pos + i}")
                     t.queue_position = max_pos + i

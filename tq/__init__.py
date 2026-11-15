@@ -1,12 +1,11 @@
-from .app import App
 from .manage import TorrentManager
 from .models import ClientState, File, QueueState, Torrent
 from .results import Continue, Ready, Reject, Select
-from .inspection import Snapshot
+from .workers import Snapshot
+from .queue import configure, inspector, processor
 
 
 __all__ = [
-    'App',
     'Continue',
     'Ready',
     'Reject',
@@ -17,4 +16,8 @@ __all__ = [
     'QueueState',
     'TorrentManager',
     'Snapshot',
+
+    'configure',
+    'inspector',
+    'processor',
 ]

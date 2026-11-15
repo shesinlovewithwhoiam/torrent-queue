@@ -41,39 +41,31 @@ class Torrent(Base):
     hash: Mapped[str] = mapped_column(String(40), primary_key=True)
     name: Mapped[Optional[str]]
     magnet: Mapped[str] = mapped_column(unique=True)
-    queue_position: Mapped[int] = mapped_column(unique=True)
+    meta: Mapped[Optional[dict]] = mapped_column(JSON)
+    files: Mapped[List["File"]] = relationship(back_populates="torrent", cascade="all, delete-orphan")
 
+
+    queue_position: Mapped[int] = mapped_column(unique=True)
     client_state: Mapped[ClientState] = mapped_column(default=ClientState.NONE)
     queue_state: Mapped[QueueState] = mapped_column(default=QueueState.PENDING)
     time_began: Mapped[Optional[datetime.datetime]]
     reason: Mapped[Optional[str]]
+    traceback: Mapped[Optional[str]]
 
     is_slow: Mapped[bool] = mapped_column(default=False)
     slow_since: Mapped[Optional[datetime.datetime]]
     dead_since: Mapped[Optional[datetime.datetime]]
-
-    claimed_at: Mapped[Optional[datetime.datetime]]
 
     # inspector
     next_check_at: Mapped[Optional[datetime.datetime]]
     snapshot: Mapped[Optional[dict]] = mapped_column(JSON)
     snapshot_at: Mapped[Optional[datetime.datetime]]
 
-    verdict: Mapped[Optional[str]] # TODO: rich return
+    verdict: Mapped[Optional[str]]
     verdict_snapshot_at: Mapped[Optional[datetime.datetime]] # matches snapshot_at value function ran on
-
-    inspect_claimed_by: Mapped[Optional[str]] # worker
-    inspect_lease_until: Mapped[Optional[datetime.datetime]]
 
 
     select_files: Mapped[Optional[list]] = mapped_column(JSON)
-
-
-    # TODO: processor
-
-
-    meta: Mapped[Optional[dict]] = mapped_column(JSON)
-    files: Mapped[List["File"]] = relationship(back_populates="torrent", cascade="all, delete-orphan")
 
 
 

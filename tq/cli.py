@@ -9,8 +9,8 @@ import os
 
 
 from .manage import TorrentManager
-from .app import App
-from .inspection import InspectorError
+from .queue import queue
+from .workers import InspectorError
 
 
 def setup_logging(name, dir_path, mode):
@@ -24,55 +24,40 @@ def setup_logging(name, dir_path, mode):
     )
 
 
-def find_app(ctx):
-    path = ctx.obj['app_path']
-    if path is None:
-        click.secho("[ERROR] Pass your app with -A module:app.", fg='red')
-        ctx.exit(1)
-
-    mod, _, var = path.partition(':')
-    var = var or 'app'
-
+def get_queue(ctx, module):
     cwd = os.getcwd()
     if cwd not in sys.path:
         sys.path.insert(0, cwd)
 
     try:
-        module = importlib.import_module(mod)
+        importlib.import_module(module)
     except ModuleNotFoundError as e:
-        click.secho(f"[ERROR] Failed to import module '{mod}': {e}", fg='red')
-        ctx.exit(1)
-
-    app = getattr(module, var, None)
-    if not isinstance(app, App):
-        click.secho(f"[ERROR] '{var}' in module '{mod}' is not an instance of tq.App.", fg='red')
+        click.secho(f"[ERROR] Failed to import module '{module}': {e}", fg='red')
         ctx.exit(1)
 
     if ctx.obj['config'] is not None:
-        app.use_config(ctx.obj['config'])
+        queue.use_config(ctx.obj['config'])
 
     try:
-        app.config
+        queue.config
     except (RuntimeError, FileNotFoundError) as e:
         click.secho(f"[ERROR] {e}", fg='red')
         ctx.exit(1)
 
-    return app
+    return queue
 
 
 @click.group()
-@click.option('-A', '--app', default=None, help='Your tq.App as module:name')
-@click.option('--config', default=None, type=click.Path(path_type=Path), help='Path to TOML config file. Overrides config given to App.')
+@click.option('--config', default=None, type=click.Path(path_type=Path), help='Path to TOML config file. Overrides tq.configure() in your module.')
 @click.pass_context
-def cli(ctx, app, config):
+def cli(ctx, config):
     ctx.ensure_object(dict)
     ctx.obj['config'] = config
-    ctx.obj['app_path'] = app
 
 
-def prepare_worker(ctx, name):
-    app = find_app(ctx)
-    config = app.config
+def prepare_worker(ctx, module, name):
+    q = get_queue(ctx, module)
+    config = q.config
 
     if not Path(config['data']['db_path']).exists():
         click.secho("[ERROR] Queue database does not exist. Run the manager first: tq manager -d data.csv", fg='red')
@@ -80,16 +65,17 @@ def prepare_worker(ctx, name):
 
     Path(config['data']['log_dir']).mkdir(parents=True, exist_ok=True)
     setup_logging(name, config['data']['log_dir'], mode='a')
-    return app
+    return q
 
 
 
 @cli.command()
+@click.argument('module')
 @click.pass_context
-def inspector(ctx):
-    app = prepare_worker(ctx, 'inspector')
+def inspector(ctx, module):
+    q = prepare_worker(ctx, module, 'inspector')
     try:
-        worker = app.inspect_worker()
+        worker = q.inspect_worker()
     except RuntimeError as e:
         click.secho(f"[ERROR] {e}", fg='red')
         ctx.exit(1)
@@ -103,19 +89,26 @@ def inspector(ctx):
 
 
 @cli.command()
+@click.argument('module')
 @click.pass_context
-def worker(ctx):
-    app = prepare_worker(ctx, 'worker')
+def processor(ctx, module):
+    q = prepare_worker(ctx, module, 'processor')
+    try:
+        worker = q.process_worker()
+    except RuntimeError as e:
+        click.secho(f"[ERROR] {e}", fg='red')
+        ctx.exit(1)
 
-    raise NotImplementedError()
+    worker.run()
 
 
 @cli.command()
+@click.argument('module')
 @click.option('-d', '--data', type=str, help="Path to CSV data file to rebuild database from. Must contain 'magnet' column")
 @click.pass_context
-def manager(ctx, data):
-    app = find_app(ctx)
-    config = app.config
+def manager(ctx, module, data):
+    q = get_queue(ctx, module)
+    config = q.config
 
     db_path = Path(config['data']['db_path'])
     if db_path.exists() and data is not None:
@@ -131,15 +124,14 @@ def manager(ctx, data):
     log_path = Path(config['data']['log_dir'])
     log_path.mkdir(parents=True, exist_ok=True)
 
-
     setup_logging('manager', config['data']['log_dir'], mode='w' if data is not None else 'a')
 
-    tm = TorrentManager(config=config, session=app.sessionmaker, inspect=app.has_inspector)
+    tm = TorrentManager(config=config, session=q.sessionmaker, inspect=q.has_inspector)
     if data is not None:
         import polars as pl
         df = pl.read_csv(data)
         try:
-            tm.build_db(df, app.engine)
+            tm.build_db(df, q.engine)
         except ValueError as e:
             click.secho(f"[ERROR] {e}", fg='red')
             ctx.exit(1)
