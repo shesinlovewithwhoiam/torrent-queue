@@ -131,6 +131,17 @@ class Worker:
 class InspectWorker(Worker):
     section = 'inspection'
 
+    def _start(self): # request check on new runs
+        stmt = (
+            update(Torrent)
+            .where(Torrent.queue_state == QueueState.ACTIVE)
+            .values(next_check_at=datetime.datetime.now())
+            .execution_options(synchronize_session=False)
+        )
+        with self.session() as s:
+            s.execute(stmt)
+            s.commit()
+
     def _next(self):
         stmt = (
             select(Torrent.hash, Torrent.snapshot, Torrent.snapshot_at, Torrent.meta)

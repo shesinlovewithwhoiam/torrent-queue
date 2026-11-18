@@ -5,10 +5,10 @@ from typing import Optional
 
 @dataclass(frozen=True)
 class Wait:
-    time: Optional[float] = None
+    delay: Optional[float] = None
 
     def __post_init__(self):
-        s = self.time
+        s = self.delay
         if s is not None and (isinstance(s, bool) or not isinstance(s, (int, float)) or not 0 < s < math.inf):
             raise TypeError(f"Wait needs a positive number of seconds, got {s!r}")
 

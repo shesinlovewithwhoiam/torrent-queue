@@ -17,7 +17,7 @@ class Outcome(NamedTuple):
     wait: Optional[float] = None
 
 
-_ALLOWED = "Wait() or Wait(time=seconds), Process(), Reject(reason), Select(files). Or, combine with a tuple, e.g. (Process(), Select(files))"
+_ALLOWED = "Wait() or Wait(delay=seconds), Process(), Reject(reason), Select(files). Or, combine with a tuple, e.g. (Process(), Select(files))"
 
 
 def parse(result):
@@ -46,4 +46,4 @@ def parse(result):
         return Outcome(Kind.REJECT, reason=verdict.reason)
     if isinstance(verdict, Process):
         return Outcome(Kind.READY, select=select)
-    return Outcome(Kind.CONTINUE, select=select, wait=verdict.time)
+    return Outcome(Kind.CONTINUE, select=select, wait=verdict.delay)
