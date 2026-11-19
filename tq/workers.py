@@ -10,7 +10,7 @@ from typing import Optional
 from sqlalchemy import or_, select, update
 
 from .models import File, QueueState, Torrent
-from .results import parse
+from .results import parse, Kind
 
 logger = logging.getLogger(__name__)
 
@@ -131,7 +131,7 @@ class Worker:
 class InspectWorker(Worker):
     section = 'inspection'
 
-    def _start(self): # request check on new runs
+    def _start(self):
         stmt = (
             update(Torrent)
             .where(Torrent.queue_state == QueueState.ACTIVE)
@@ -174,7 +174,7 @@ class InspectWorker(Worker):
             verdict=outcome.kind.value,
             reason=outcome.reason,
             verdict_snapshot_at=snapshot_at,
-            next_check_at=now + datetime.timedelta(seconds=outcome.wait) if outcome.wait else None,
+            next_check_at=None if outcome.kind == Kind.WAIT_FOR_COMPLETION else now + datetime.timedelta(seconds=outcome.wait),
         )
         if outcome.select is not None:
             values['select_files'] = list(outcome.select)

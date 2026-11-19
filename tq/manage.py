@@ -127,7 +127,7 @@ class TorrentManager:
         elif verdict == Kind.READY:
             self._mark_ready(session, db_t, t, updates, wanted)
         elif db_t.client_state == ClientState.COMPLETED:
-            if not self._final_check_pending(db_t, t, now):
+            if db_t.next_check_at is None or not self._final_check_pending(db_t, t, now):
                 self._mark_ready(session, db_t, t, updates, wanted)
         elif reason := self._check_dead(db_t, t):
             self._terminate(db_t, QueueState.STALLED, reason)

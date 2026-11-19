@@ -5,13 +5,16 @@ from typing import Optional
 
 @dataclass(frozen=True)
 class Wait:
-    delay: Optional[float] = None
+    delay: float
 
     def __post_init__(self):
         s = self.delay
-        if s is not None and (isinstance(s, bool) or not isinstance(s, (int, float)) or not 0 < s < math.inf):
+        if isinstance(s, bool) or not isinstance(s, (int, float)) or not 0 < s < math.inf:
             raise TypeError(f"Wait needs a positive number of seconds, got {s!r}")
 
+@dataclass(frozen=True)
+class WaitForCompletion:
+    pass
 
 @dataclass(frozen=True)
 class Process:
@@ -47,4 +50,3 @@ class Select:
         object.__setattr__(self, "files", tuple(sorted(set(indices))))
 
 
-__all__ = ["Wait", "Process", "Reject", "Select"]
