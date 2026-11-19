@@ -1,10 +1,18 @@
 import logging
-from collections.abc import Mapping
+from collections.abc import Mapping, Callable
+from typing import TYPE_CHECKING
 
 from .utils import load_toml
 
+
 logger = logging.getLogger(__name__)
 
+
+if TYPE_CHECKING:
+    from .actions import Actions
+    from .workers import Snapshot, ProcessInfo
+    InspectorFn = Callable[["Snapshot"], "Actions"]
+    ProcessorFn = Callable[["ProcessInfo"], None]
 
 
 class Queue:
@@ -67,7 +75,7 @@ queue = Queue()
 def configure(source):
     queue.use_config(source)
 
-def inspector(fn=None):
+def inspector(fn: "InspectorFn" = None) -> "InspectorFn":
     if not callable(fn):
         raise TypeError("Use @tq.inspector without parentheses")
     if queue.inspector_fn is not None and queue.inspector_fn is not fn:
@@ -75,7 +83,7 @@ def inspector(fn=None):
     queue.inspector_fn = fn
     return fn
 
-def processor(fn=None):
+def processor(fn: "ProcessorFn" = None) -> "ProcessorFn":
     if not callable(fn):
         raise TypeError("Use @tq.processor without parentheses")
     if queue.processor_fn is not None and queue.processor_fn is not fn:

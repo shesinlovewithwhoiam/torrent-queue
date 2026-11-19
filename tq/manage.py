@@ -114,7 +114,7 @@ class TorrentManager:
 
 
     def _handle_queued(self, session, db_t, t, updates):
-        verdict, db_t.verdict = db_t.verdict, None
+        action, db_t.action = db_t.action, None
         wanted = self._apply_select(db_t, t, updates)
         if db_t.queue_state != QueueState.ACTIVE:
             return
@@ -122,9 +122,9 @@ class TorrentManager:
 
         now = datetime.datetime.now()
 
-        if verdict == Kind.REJECT:
+        if action == Kind.REJECT:
             self._terminate(db_t, QueueState.INVALID, db_t.reason or "Inspector returned Reject()")
-        elif verdict == Kind.READY:
+        elif action == Kind.READY:
             self._mark_ready(session, db_t, t, updates, wanted)
         elif db_t.client_state == ClientState.COMPLETED:
             if db_t.next_check_at is None or not self._final_check_pending(db_t, t, now):
@@ -192,7 +192,7 @@ class TorrentManager:
         if not self.inspect_enabled:
             return False
         if (db_t.snapshot or {}).get('is_final'):
-            has_checked = db_t.verdict_snapshot_at is not None and db_t.verdict_snapshot_at >= db_t.snapshot_at
+            has_checked = db_t.action_snapshot_at is not None and db_t.action_snapshot_at >= db_t.snapshot_at
             return not has_checked
         db_t.next_check_at = now
         self._take_snapshot(db_t, t, now)
@@ -389,7 +389,7 @@ class TorrentManager:
 
                     t.reason = None
                     t.next_check_at = t.snapshot = t.snapshot_at = None
-                    t.verdict = t.verdict_snapshot_at = t.select_files = None
+                    t.action = t.action_snapshot_at = t.select_files = None
   
                     t.files.clear()
                     logger.info(f"Deprioritizing removed torrent: {t}. Queue position: {t.queue_position} -> {max_pos + i}")

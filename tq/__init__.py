@@ -1,8 +1,17 @@
 from .manage import TorrentManager
 from .models import ClientState, File, QueueState, Torrent
-from .verdicts import Process, Reject, Select, Wait
-from .workers import Snapshot
+from .actions import (
+    Process,
+    Reject,
+    Select,
+    Wait,
+    WaitForCompletion,
+    Action,
+    Actions
+)
+from .workers import Snapshot, ProcessInfo
 from .queue import configure, inspector, processor
+
 
 
 __all__ = [
@@ -11,12 +20,17 @@ __all__ = [
     'ClientState',
     'QueueState',
     'TorrentManager',
-    'Snapshot',
-    
+
     'Wait',
     'Process',
     'Reject',
     'Select',
+    'WaitForCompletion',
+
+    'Action',
+    'Actions',
+    'ProcessInfo'
+    'Snapshot',
 
     'configure',
     'inspector',

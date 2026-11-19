@@ -61,8 +61,8 @@ class Torrent(Base):
     snapshot: Mapped[Optional[dict]] = mapped_column(JSON)
     snapshot_at: Mapped[Optional[datetime.datetime]]
 
-    verdict: Mapped[Optional[str]]
-    verdict_snapshot_at: Mapped[Optional[datetime.datetime]] # matches snapshot_at value function ran on
+    action: Mapped[Optional[str]]
+    action_snapshot_at: Mapped[Optional[datetime.datetime]] # matches snapshot_at value function ran on
 
 
     select_files: Mapped[Optional[list]] = mapped_column(JSON)

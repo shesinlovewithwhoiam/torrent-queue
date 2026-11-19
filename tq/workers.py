@@ -148,7 +148,7 @@ class InspectWorker(Worker):
             .where(
                 Torrent.queue_state == QueueState.ACTIVE,
                 Torrent.snapshot_at.is_not(None),
-                or_(Torrent.verdict_snapshot_at.is_(None), Torrent.verdict_snapshot_at < Torrent.snapshot_at),
+                or_(Torrent.action_snapshot_at.is_(None), Torrent.action_snapshot_at < Torrent.snapshot_at),
             )
             .order_by(Torrent.snapshot_at)
             .limit(1)
@@ -166,14 +166,14 @@ class InspectWorker(Worker):
             raise InspectorError(f"Inspector failed on {hash} ({name}): {e}") from e
 
         if not self._write(hash, snapshot_at, outcome):
-            logger.warning(f"{hash} changed while it was being checked. Discarding {outcome.kind} verdict")
+            logger.warning(f"{hash} changed while it was being checked. Discarding {outcome.kind} action")
 
     def _write(self, hash, snapshot_at, outcome):
         now = datetime.datetime.now()
         values = dict(
-            verdict=outcome.kind.value,
+            action=outcome.kind.value,
             reason=outcome.reason,
-            verdict_snapshot_at=snapshot_at,
+            action_snapshot_at=snapshot_at,
             next_check_at=None if outcome.kind == Kind.WAIT_FOR_COMPLETION else now + datetime.timedelta(seconds=outcome.wait),
         )
         if outcome.select is not None:
