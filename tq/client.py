@@ -12,6 +12,7 @@ class ClientUpdate:
     pause: list[str] = field(default_factory=list)
     resume: list[str] = field(default_factory=list)
     delete: list[str] = field(default_factory=list)
+    remove: list[str] = field(default_factory=list)
     select: list[tuple[str, list[int], list[int]]] = field(default_factory=list)
 
 
@@ -96,6 +97,13 @@ class TorrentClient:
                 torrent_hashes=updates.delete,
                 delete_files=True,
             )
+        if updates.remove:
+            logger.info(f"Removing {len(updates.remove)} torrents from client, keeping their files: {updates.remove}")
+            self._client.torrents_delete(
+                torrent_hashes=updates.remove,
+                delete_files=False,
+            )
+
 
     def refresh_interval(self):
         return self._client.app_preferences()['refresh_interval'] / 1000

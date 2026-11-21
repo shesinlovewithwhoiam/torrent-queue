@@ -103,8 +103,13 @@ class TorrentManager:
                     self._handle_queued(session, db_t, t, updates)
                 
                 if db_t.queue_state in SHOULD_DELETE:
-                    logger.info(f"Deleting ({db_t.queue_state}): {db_t}")
-                    updates.delete.append(db_t.hash)
+                    if db_t.keep_files:
+                        logger.info(f"Removing, keeping files ({db_t.queue_state}): {db_t}")
+                        updates.remove.append(db_t.hash)
+                    else:
+                        logger.info(f"Deleting ({db_t.queue_state}): {db_t}")
+                        updates.delete.append(db_t.hash)
+                    
             
             self._reset_removed(session, in_client)
             self._limit(session, updates)
@@ -358,7 +363,7 @@ class TorrentManager:
                         and_(Torrent.client_state == ClientState.DOWNLOADING, ~Torrent.is_slow),
                     ),
                 ),
-                Torrent.queue_state.in_([QueueState.READY, QueueState.PROCESSING])
+                Torrent.queue_state.in_([QueueState.READY, QueueState.PROCESSING, QueueState.FAILED])
             )
         )
         return session.scalar(stmt)
@@ -390,6 +395,8 @@ class TorrentManager:
                     t.reason = None
                     t.next_check_at = t.snapshot = t.snapshot_at = None
                     t.action = t.action_snapshot_at = t.select_files = None
+
+                    t.keep_files = False
   
                     t.files.clear()
                     logger.info(f"Deprioritizing removed torrent: {t}. Queue position: {t.queue_position} -> {max_pos + i}")

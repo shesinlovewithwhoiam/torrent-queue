@@ -65,8 +65,9 @@ class Torrent(Base):
     action_snapshot_at: Mapped[Optional[datetime.datetime]] # matches snapshot_at value function ran on
 
 
+    
     select_files: Mapped[Optional[list]] = mapped_column(JSON)
-
+    keep_files: Mapped[bool] = mapped_column(default=False)
 
 
     def __repr__(self):
@@ -93,10 +94,10 @@ STATE_CHANGE_VALID = {
     QueueState.DONE: set(),
     QueueState.STALLED: set(),
     QueueState.INVALID: set(),
-    QueueState.FAILED: set(),
+    QueueState.FAILED: {QueueState.READY},
 }
 
-SHOULD_DELETE = {QueueState.DONE, QueueState.STALLED, QueueState.INVALID, QueueState.FAILED}
+SHOULD_DELETE = {QueueState.DONE, QueueState.STALLED, QueueState.INVALID} # TODO: adjustable whetehr delete on fail?
 
 
 def set_queue_state(t, new):

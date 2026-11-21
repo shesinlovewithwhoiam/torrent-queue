@@ -87,7 +87,7 @@ class Worker:
             self._stop.set()
             logger.info("Finishing current work. Press Ctrl+C again to stop now.")
 
-        self._stop.clear()
+        # self._stop.clear()
         old = {}
         if threading.current_thread() is threading.main_thread():
             for sig in (signal.SIGINT, signal.SIGTERM):
@@ -107,6 +107,13 @@ class Worker:
                 signal.signal(sig, handler)
             self._cleanup()
             logger.info(f"{type(self).__name__} stopped")
+
+
+    def stop(self):
+        self._stop.set()
+
+    def wait_for_stop(self):
+        self._stop.wait()
 
     def run_once(self):
         claimed = self._next()
@@ -174,10 +181,12 @@ class InspectWorker(Worker):
             action=outcome.kind.value,
             reason=outcome.reason,
             action_snapshot_at=snapshot_at,
-            next_check_at=None if outcome.kind == Kind.WAIT_FOR_COMPLETION else now + datetime.timedelta(seconds=outcome.wait),
+            next_check_at=now + datetime.timedelta(seconds=outcome.wait) if outcome.kind == Kind.CONTINUE else None,
         )
         if outcome.select is not None:
             values['select_files'] = list(outcome.select)
+        if outcome.keep_files:
+            values['keep_files'] = True
         stmt = (
             update(Torrent)
             .where(Torrent.hash == hash, Torrent.queue_state == QueueState.ACTIVE, Torrent.snapshot_at == snapshot_at)

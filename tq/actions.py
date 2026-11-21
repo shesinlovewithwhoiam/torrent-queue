@@ -35,10 +35,13 @@ class Process(Action):
 @dataclass(frozen=True)
 class Reject(Action):
     reason: str
+    delete: bool = True
 
     def __post_init__(self):
         if not isinstance(self.reason, str) or not self.reason.strip():
             raise TypeError("Reject needs a non-empty reason string")
+        if not isinstance(self.delete, bool):
+            raise TypeError(f"Reject delete needs True or False, got {self.delete!r}")
 
 
 @dataclass(frozen=True)

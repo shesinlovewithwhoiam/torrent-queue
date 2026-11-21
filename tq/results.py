@@ -19,6 +19,7 @@ class Outcome(NamedTuple):
     reason: Optional[str] = None
     select: Optional[tuple] = None
     wait: Optional[float] = None
+    keep_files: bool = False
 
 
 def _drain(gen):
@@ -60,7 +61,7 @@ def parse(result):
     if isinstance(action, Reject):
         if select is not None:
             raise TypeError("Reject cannot be combined with other results")
-        return Outcome(Kind.REJECT, reason=action.reason)
+        return Outcome(Kind.REJECT, reason=action.reason, keep_files=not action.delete)
     if isinstance(action, Process):
         return Outcome(Kind.READY, select=select)
     if isinstance(action, WaitForCompletion):
